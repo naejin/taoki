@@ -578,6 +578,54 @@ macro_rules! my_macro { () => {}; }
     }
 
     #[test]
+    fn ts_all_sections() {
+        let src = "\
+import { Request, Response } from 'express';
+
+export interface Config {
+    port: number;
+    host: string;
+}
+
+export type ID = string | number;
+
+export enum Direction { Up, Down }
+
+export const PORT: number = 3000;
+
+export class Service {
+    process(input: string): string { return input; }
+}
+
+export function handler(req: Request): Response { return new Response(); }
+";
+        let out = idx(src, Language::TypeScript);
+        has(&out, &[
+            "imports:",
+            "{ Request, Response } from 'express'",
+            "types:",
+            "export interface Config",
+            "port: number",
+            "export enum Direction",
+            "consts:",
+            "PORT",
+            "classes:",
+            "export Service",
+            "fns:",
+            "export handler(req: Request)",
+        ]);
+    }
+
+    #[test]
+    fn js_function() {
+        let out = idx(
+            "function hello(name) {\n    console.log(name);\n}\n",
+            Language::JavaScript,
+        );
+        has(&out, &["fns:", "hello(name)"]);
+    }
+
+    #[test]
     fn python_all_sections() {
         let src = "\
 \"\"\"Module docstring.\"\"\"
