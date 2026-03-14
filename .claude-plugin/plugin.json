@@ -1,0 +1,9 @@
+{
+  "name": "taoki",
+  "version": "0.1.0",
+  "description": "Code indexing and structural mapping for Claude Code",
+  "author": {
+    "name": "Daylon"
+  },
+  "keywords": ["code-index", "code-map", "tree-sitter"]
+}

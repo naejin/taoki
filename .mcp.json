@@ -1,0 +1,6 @@
+{
+  "taoki": {
+    "command": "${CLAUDE_PLUGIN_ROOT}/scripts/run.sh",
+    "args": []
+  }
+}
