@@ -1,3 +1,4 @@
+mod codemap;
 mod index;
 
 fn main() {
