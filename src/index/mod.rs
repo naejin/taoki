@@ -626,6 +626,55 @@ export function handler(req: Request): Response { return new Response(); }
     }
 
     #[test]
+    fn go_all_sections() {
+        let src = r#"
+package main
+
+import (
+	"fmt"
+	"os"
+)
+
+const MaxRetries = 3
+
+type Point struct {
+	X int
+	Y int
+}
+
+type Reader interface {
+	Read(p []byte) (int, error)
+}
+
+func (p *Point) Distance() float64 {
+	return 0
+}
+
+func main() {
+	fmt.Println("hello")
+}
+"#;
+        let out = idx(src, Language::Go);
+        has(&out, &[
+            "imports:",
+            "fmt",
+            "os",
+            "consts:",
+            "MaxRetries",
+            "types:",
+            "struct Point",
+            "X int",
+            "traits:",
+            "Reader",
+            "Read(p []byte) (int, error)",
+            "impls:",
+            "(p *Point) Distance() float64",
+            "fns:",
+            "main()",
+        ]);
+    }
+
+    #[test]
     fn python_all_sections() {
         let src = "\
 \"\"\"Module docstring.\"\"\"
