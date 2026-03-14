@@ -675,6 +675,46 @@ func main() {
     }
 
     #[test]
+    fn java_all_sections() {
+        let src = r#"
+package com.example;
+
+import java.util.List;
+import java.io.IOException;
+
+public class Service {
+    private String name;
+    public Service(String name) { this.name = name; }
+    public void process(List<String> items) throws IOException {}
+}
+
+public interface Handler {
+    void handle(String request);
+}
+
+public enum Direction {
+    UP, DOWN, LEFT, RIGHT
+}
+"#;
+        let out = idx(src, Language::Java);
+        has(&out, &[
+            "imports:",
+            "java::{util::List, io::IOException}",
+            "mod:",
+            "com.example",
+            "classes:",
+            "public class Service",
+            "private String name",
+            "public Service(String name)",
+            "traits:",
+            "public interface Handler",
+            "types:",
+            "public enum Direction",
+            "UP",
+        ]);
+    }
+
+    #[test]
     fn python_all_sections() {
         let src = "\
 \"\"\"Module docstring.\"\"\"
