@@ -505,4 +505,75 @@ mod tests {
             assert!(!output.contains(n), "unexpected {n:?} in:\n{output}");
         }
     }
+
+    #[test]
+    fn rust_all_sections() {
+        let src = "\
+//! Module doc
+use std::collections::HashMap;
+use std::io;
+
+const MAX: usize = 1024;
+static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Clone)]
+pub struct Config {
+    pub name: String,
+    pub port: u16,
+}
+
+enum Color { Red, Green }
+
+pub trait Handler {
+    fn handle(&self, req: Request) -> Response;
+}
+
+impl Display for Foo {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, \"Foo\")
+    }
+}
+
+impl Config {
+    pub fn new(name: String) -> Self { todo!() }
+}
+
+pub fn process(input: &str) -> Result<String, Error> { todo!() }
+
+pub mod utils;
+
+macro_rules! my_macro { () => {}; }
+";
+        let out = idx(src, Language::Rust);
+        has(&out, &[
+            "module doc:",
+            "imports:",
+            "std::",
+            "consts:",
+            "MAX: usize",
+            "static COUNTER: AtomicU64",
+            "types:",
+            "#[derive(Debug, Clone)]",
+            "pub struct Config",
+            "traits:",
+            "pub Handler",
+            "impls:",
+            "Display for Foo",
+            "Config",
+            "fns:",
+            "pub process(input: &str)",
+            "mod:",
+            "pub utils",
+            "macros:",
+            "my_macro!",
+        ]);
+    }
+
+    #[test]
+    fn rust_test_module_collapsed() {
+        let src = "fn main() {}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn it_works() {}\n}\n";
+        let out = idx(src, Language::Rust);
+        has(&out, &["tests:"]);
+        lacks(&out, &["it_works"]);
+    }
 }
