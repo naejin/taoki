@@ -114,6 +114,7 @@ fn save_cache(root: &Path, cache: &Cache) {
     let lock_path = path.with_extension("lock");
     let lock_file = match std::fs::OpenOptions::new()
         .create(true)
+        .truncate(false)
         .read(true)
         .write(true)
         .open(&lock_path)
