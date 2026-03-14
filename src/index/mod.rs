@@ -576,4 +576,46 @@ macro_rules! my_macro { () => {}; }
         has(&out, &["tests:"]);
         lacks(&out, &["it_works"]);
     }
+
+    #[test]
+    fn python_all_sections() {
+        let src = "\
+\"\"\"Module docstring.\"\"\"
+
+import os
+from typing import Optional
+
+MAX_RETRIES = 3
+
+@dataclass
+class MyClass:
+    x: int = 0
+
+class AuthService:
+    def __init__(self, secret: str):
+        self.secret = secret
+    @staticmethod
+    def validate(token: str) -> bool:
+        return True
+
+def process(data: list) -> dict:
+    return {}
+";
+        let out = idx(src, Language::Python);
+        has(&out, &[
+            "module doc:",
+            "imports:",
+            "os",
+            "typing::Optional",
+            "consts:",
+            "MAX_RETRIES",
+            "classes:",
+            "MyClass",
+            "AuthService",
+            "__init__(self, secret: str)",
+            "validate(token: str) -> bool",
+            "fns:",
+            "process(data: list) -> dict",
+        ]);
+    }
 }
