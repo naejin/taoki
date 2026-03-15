@@ -186,12 +186,64 @@ impl TsJsExtractor {
         None
     }
 
+    const NOISY_RECEIVERS: &'static [&'static str] = &[
+        "console", "process", "logging", "log", "logger", "Math", "Object", "Array", "JSON",
+    ];
+
+    fn extract_assignment_expression(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
+        let child = node.child(0)?;
+        if child.kind() != "assignment_expression" {
+            return None;
+        }
+        let text = truncate(node_text(child, source).trim(), 80);
+        Some(SkeletonEntry::new(Section::Expression, node, text.to_string()))
+    }
+
+    fn extract_dotted_call(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
+        let child = node.child(0)?;
+        if child.kind() != "call_expression" {
+            return None;
+        }
+        let func = child.child_by_field_name("function")?;
+        if func.kind() != "member_expression" {
+            return None;
+        }
+        let receiver = func.child_by_field_name("object").map(|n| node_text(n, source)).unwrap_or("");
+        if Self::NOISY_RECEIVERS.contains(&receiver) {
+            return None;
+        }
+        let text = truncate(node_text(child, source).trim(), 80);
+        Some(SkeletonEntry::new(Section::Expression, node, text.to_string()))
+    }
+
+    fn extract_export_default(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
+        let mut cursor = node.walk();
+        let has_default = node.children(&mut cursor).any(|c| node_text(c, source) == "default");
+        if !has_default {
+            return None;
+        }
+        let text = truncate(node_text(node, source).trim().trim_end_matches(';'), 80);
+        Some(SkeletonEntry::new(Section::Expression, node, text.to_string()))
+    }
+
     fn extract_lexical_declaration(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
         let kind_text = node.child(0).map(|n| node_text(n, source)).unwrap_or("");
         if kind_text == "const" {
             self.extract_const(node, source)
         } else {
-            None
+            // let/var declarations
+            let decl = find_child(node, "variable_declarator")?;
+            let name = decl.child_by_field_name("name").map(|n| node_text(n, source))?;
+            let type_str = decl.child_by_field_name("type").map(|n| ts_return_type(n, source)).unwrap_or_default();
+            let val_str = decl.child_by_field_name("value")
+                .map(|n| format!(" = {}", truncate(node_text(n, source), 60)))
+                .unwrap_or_default();
+            let ep = self.export_prefix(node);
+            Some(SkeletonEntry::new(
+                Section::Expression,
+                node,
+                format!("{ep}{kind_text} {name}{type_str}{val_str}"),
+            ))
         }
     }
 }
@@ -206,7 +258,15 @@ impl LanguageExtractor for TsJsExtractor {
             "type_alias_declaration" => self.extract_type_alias(node, source),
             "enum_declaration" => self.extract_enum(node, source),
             "lexical_declaration" => self.extract_lexical_declaration(node, source),
-            "export_statement" => self.extract_export_statement(node, source),
+            "expression_statement" => {
+                self.extract_assignment_expression(node, source)
+                    .or_else(|| self.extract_dotted_call(node, source))
+            }
+            "variable_declaration" => self.extract_lexical_declaration(node, source),
+            "export_statement" => {
+                self.extract_export_statement(node, source)
+                    .or_else(|| self.extract_export_default(node, source))
+            }
             _ => None,
         };
         entry.into_iter().collect()
@@ -282,6 +342,55 @@ impl LanguageExtractor for TsJsExtractor {
 #[cfg(test)]
 mod tests {
     use crate::index::{Language, index_source};
+
+    #[test]
+    fn ts_top_level_expressions() {
+        let src = "\
+import express from 'express';
+
+const app = express();
+let server;
+var config = {};
+
+module.exports = { app };
+exports.handler = handler;
+
+app.use(middleware());
+app.get('/api', handler);
+router.post('/login', auth);
+
+console.log('starting');
+process.exit(1);
+
+export default class App {}
+";
+        let out = index_source(src.as_bytes(), Language::TypeScript).unwrap();
+
+        // const should be in consts:
+        assert!(out.contains("consts:"), "missing consts section in:\n{out}");
+        assert!(out.contains("app"), "missing app const in:\n{out}");
+
+        // let/var should be in exprs:
+        assert!(out.contains("exprs:"), "missing exprs section in:\n{out}");
+        assert!(out.contains("server"), "missing let server in:\n{out}");
+        assert!(out.contains("config"), "missing var config in:\n{out}");
+
+        // Assignment expressions should be in exprs:
+        assert!(out.contains("module.exports"), "missing module.exports in:\n{out}");
+        assert!(out.contains("exports.handler"), "missing exports.handler in:\n{out}");
+
+        // Dotted method calls should be in exprs:
+        assert!(out.contains("app.use"), "missing app.use in:\n{out}");
+        assert!(out.contains("app.get"), "missing app.get in:\n{out}");
+        assert!(out.contains("router.post"), "missing router.post in:\n{out}");
+
+        // Noise should NOT appear
+        assert!(!out.contains("console.log"), "console.log should be filtered in:\n{out}");
+        assert!(!out.contains("process.exit"), "process.exit should be filtered in:\n{out}");
+
+        // export default should appear
+        assert!(out.contains("App"), "missing export default class App in:\n{out}");
+    }
 
     #[test]
     fn ts_test_calls_collapsed() {
