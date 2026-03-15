@@ -1,4 +1,5 @@
 mod codemap;
+mod deps;
 mod index;
 mod mcp;
 

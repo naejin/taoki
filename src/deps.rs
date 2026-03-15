@@ -1,0 +1,626 @@
+#![allow(dead_code)]
+use std::collections::HashMap;
+use std::path::{Component, Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+use tree_sitter::Parser;
+
+use crate::index::{Language, find_child, node_text};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportInfo {
+    pub path: String,
+    pub symbols: Vec<String>,
+    pub external: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileImports {
+    pub imports: Vec<ImportInfo>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DepsGraph {
+    pub version: u32,
+    pub graph: HashMap<String, FileImports>,
+}
+
+pub const DEPS_VERSION: u32 = 1;
+const DEPS_FILE: &str = "deps.json";
+const DEPS_DIR: &str = ".cache/taoki";
+
+/// Extract raw imports from source. Returns Vec<(import_path, symbols)>.
+pub fn extract_imports(source: &[u8], lang: Language) -> Vec<(String, Vec<String>)> {
+    let mut parser = Parser::new();
+    if parser.set_language(&lang.ts_language()).is_err() {
+        return Vec::new();
+    }
+    let tree = match parser.parse(source, None) {
+        Some(t) => t,
+        None => return Vec::new(),
+    };
+    let root = tree.root_node();
+
+    match lang {
+        Language::Rust => extract_rust_imports(root, source),
+        Language::Python => extract_python_imports(root, source),
+        Language::TypeScript | Language::JavaScript => extract_ts_imports(root, source),
+        Language::Go => extract_go_imports(root, source),
+        Language::Java => extract_java_imports(root, source),
+    }
+}
+
+fn extract_rust_imports(root: tree_sitter::Node, source: &[u8]) -> Vec<(String, Vec<String>)> {
+    let mut result = Vec::new();
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        if child.kind() == "use_declaration" {
+            let text = node_text(child, source);
+            let cleaned = text
+                .strip_prefix("use ")
+                .unwrap_or(text)
+                .trim_end_matches(';')
+                .trim()
+                .to_string();
+            if !cleaned.is_empty() {
+                result.push((cleaned, Vec::new()));
+            }
+        }
+    }
+    result
+}
+
+fn extract_python_imports(root: tree_sitter::Node, source: &[u8]) -> Vec<(String, Vec<String>)> {
+    let mut result = Vec::new();
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        match child.kind() {
+            "import_statement" => {
+                let text = node_text(child, source);
+                let cleaned = text
+                    .strip_prefix("import ")
+                    .unwrap_or(text)
+                    .trim()
+                    .to_string();
+                if !cleaned.is_empty() {
+                    result.push((cleaned, Vec::new()));
+                }
+            }
+            "import_from_statement" => {
+                // "from X import Y, Z"
+                let text = node_text(child, source);
+                // Extract module name: between "from " and " import"
+                if let Some(rest) = text.strip_prefix("from ") {
+                    if let Some(idx) = rest.find(" import ") {
+                        let module = rest[..idx].trim().to_string();
+                        let symbols_str = rest[idx + " import ".len()..].trim();
+                        let symbols: Vec<String> = symbols_str
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                        if !module.is_empty() {
+                            result.push((module, symbols));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    result
+}
+
+fn extract_ts_imports(root: tree_sitter::Node, source: &[u8]) -> Vec<(String, Vec<String>)> {
+    let mut result = Vec::new();
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        if child.kind() == "import_statement" {
+            // Get the source (module path)
+            let src_node = child.child_by_field_name("source");
+            let import_path = if let Some(src) = src_node {
+                let raw = node_text(src, source);
+                raw.trim_matches(|c| c == '\'' || c == '"').to_string()
+            } else {
+                continue;
+            };
+
+            // Extract named symbols from import_clause
+            let mut symbols = Vec::new();
+            if let Some(clause) = find_child(child, "import_clause") {
+                // Look for named_imports inside import_clause
+                if let Some(named) = find_child(clause, "named_imports") {
+                    let mut nc = named.walk();
+                    for item in named.children(&mut nc) {
+                        if item.kind() == "import_specifier" {
+                            if let Some(name_node) = item.child_by_field_name("name") {
+                                symbols.push(node_text(name_node, source).to_string());
+                            } else {
+                                // Fallback: first child
+                                if let Some(first) = item.child(0) {
+                                    symbols.push(node_text(first, source).to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !import_path.is_empty() {
+                result.push((import_path, symbols));
+            }
+        }
+    }
+    result
+}
+
+fn extract_go_imports(root: tree_sitter::Node, source: &[u8]) -> Vec<(String, Vec<String>)> {
+    let mut result = Vec::new();
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        if child.kind() == "import_declaration" {
+            if let Some(spec_list) = find_child(child, "import_spec_list") {
+                let mut sc = spec_list.walk();
+                for spec in spec_list.children(&mut sc) {
+                    if spec.kind() == "import_spec" {
+                        let path = spec
+                            .child_by_field_name("path")
+                            .map(|n| node_text(n, source).trim_matches('"').to_string())
+                            .unwrap_or_default();
+                        if !path.is_empty() {
+                            result.push((path, Vec::new()));
+                        }
+                    }
+                }
+            } else if let Some(spec) = find_child(child, "import_spec") {
+                let path = spec
+                    .child_by_field_name("path")
+                    .map(|n| node_text(n, source).trim_matches('"').to_string())
+                    .unwrap_or_default();
+                if !path.is_empty() {
+                    result.push((path, Vec::new()));
+                }
+            }
+        }
+    }
+    result
+}
+
+fn extract_java_imports(root: tree_sitter::Node, source: &[u8]) -> Vec<(String, Vec<String>)> {
+    let mut result = Vec::new();
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        if child.kind() == "import_declaration" {
+            let text = node_text(child, source);
+            let cleaned = text
+                .strip_prefix("import ")
+                .unwrap_or(text)
+                .trim_end_matches(';')
+                .trim()
+                .to_string();
+            if !cleaned.is_empty() {
+                // Split on last '.' to separate module from symbol
+                if let Some(dot_pos) = cleaned.rfind('.') {
+                    let module = cleaned[..dot_pos].to_string();
+                    let symbol = cleaned[dot_pos + 1..].to_string();
+                    result.push((module, vec![symbol]));
+                } else {
+                    result.push((cleaned, Vec::new()));
+                }
+            }
+        }
+    }
+    result
+}
+
+/// Resolve an import path to a file in `all_files` (relative paths as strings).
+/// Returns Some(relative_path) if resolved to an internal file, None for external.
+pub fn resolve_import(
+    import_path: &str,
+    lang: Language,
+    current_file: &str,
+    all_files: &[String],
+) -> Option<String> {
+    match lang {
+        Language::Rust => resolve_rust(import_path, all_files),
+        Language::Python => resolve_python(import_path, current_file, all_files),
+        Language::TypeScript | Language::JavaScript => {
+            resolve_ts(import_path, current_file, all_files)
+        }
+        Language::Go => None,
+        Language::Java => resolve_java(import_path, all_files),
+    }
+}
+
+fn resolve_rust(import_path: &str, all_files: &[String]) -> Option<String> {
+    // Only resolve crate:: imports
+    let rest = import_path.strip_prefix("crate::")?;
+
+    // Convert :: to / and try progressively shorter paths (last segments may be symbols)
+    let parts: Vec<&str> = rest.split("::").collect();
+
+    for take in (1..=parts.len()).rev() {
+        let path_str = parts[..take].join("/");
+        let candidates = [
+            format!("src/{path_str}.rs"),
+            format!("src/{path_str}/mod.rs"),
+            format!("{path_str}.rs"),
+            format!("{path_str}/mod.rs"),
+        ];
+        for candidate in &candidates {
+            if all_files.iter().any(|f| f == candidate) {
+                return Some(candidate.clone());
+            }
+        }
+    }
+    None
+}
+
+fn resolve_python(import_path: &str, current_file: &str, all_files: &[String]) -> Option<String> {
+    if import_path.starts_with('.') {
+        // Relative import
+        let current_dir = Path::new(current_file).parent().unwrap_or(Path::new(""));
+        // Strip leading dots to determine how many levels up
+        let dots = import_path.chars().take_while(|c| *c == '.').count();
+        let module_part = &import_path[dots..];
+
+        // Walk up `dots - 1` levels from current_dir
+        let mut base = current_dir.to_path_buf();
+        for _ in 1..dots {
+            base = base.parent().unwrap_or(Path::new("")).to_path_buf();
+        }
+
+        let rel_path = if module_part.is_empty() {
+            base
+        } else {
+            base.join(module_part.replace('.', "/"))
+        };
+
+        let candidates = [
+            format!("{}.py", rel_path.display()),
+            format!("{}/__init__.py", rel_path.display()),
+        ];
+        for candidate in &candidates {
+            let normalized = candidate.replace('\\', "/");
+            if all_files.iter().any(|f| f == &normalized) {
+                return Some(normalized);
+            }
+        }
+        None
+    } else {
+        // Absolute import: replace . with /
+        let path_str = import_path.replace('.', "/");
+        let candidates = [
+            format!("{path_str}.py"),
+            format!("{path_str}/__init__.py"),
+        ];
+        for candidate in &candidates {
+            if all_files.iter().any(|f| f == candidate) {
+                return Some(candidate.clone());
+            }
+        }
+        None
+    }
+}
+
+fn resolve_ts(import_path: &str, current_file: &str, all_files: &[String]) -> Option<String> {
+    // Only resolve relative imports
+    if !import_path.starts_with("./") && !import_path.starts_with("../") {
+        return None;
+    }
+
+    let current_dir = Path::new(current_file).parent().unwrap_or(Path::new(""));
+    let joined = current_dir.join(import_path);
+    let normalized = normalize_path(&joined);
+
+    let extensions = ["ts", "tsx", "js", "jsx", "mjs", "cjs"];
+
+    // Try with each extension appended
+    for ext in &extensions {
+        let candidate = normalized.with_extension(ext);
+        let candidate_str = candidate.to_string_lossy().replace('\\', "/");
+        if all_files.iter().any(|f| f == &candidate_str) {
+            return Some(candidate_str);
+        }
+    }
+
+    // Try as directory with index file
+    for ext in &extensions {
+        let candidate = normalized.join(format!("index.{ext}"));
+        let candidate_str = candidate.to_string_lossy().replace('\\', "/");
+        if all_files.iter().any(|f| f == &candidate_str) {
+            return Some(candidate_str);
+        }
+    }
+
+    None
+}
+
+fn resolve_java(import_path: &str, all_files: &[String]) -> Option<String> {
+    // import_path is the module part (e.g. "java.util" for "java.util.List")
+    let path_str = import_path.replace('.', "/");
+    let prefixes = ["", "src/main/java/", "src/"];
+    for prefix in &prefixes {
+        let candidate = format!("{prefix}{path_str}.java");
+        if all_files.iter().any(|f| f == &candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut components = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                components.pop();
+            }
+            Component::CurDir => {}
+            _ => {
+                components.push(component);
+            }
+        }
+    }
+    components.iter().collect()
+}
+
+/// Build a dependency graph from a list of files under `root`.
+pub fn build_deps_graph(root: &Path, files: &[PathBuf]) -> DepsGraph {
+    let mut graph: HashMap<String, FileImports> = HashMap::new();
+
+    // Build list of relative paths (as strings) for resolution
+    let all_files: Vec<String> = files
+        .iter()
+        .filter_map(|p| {
+            p.strip_prefix(root)
+                .ok()
+                .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+        })
+        .collect();
+
+    for file_path in files {
+        let rel = match file_path.strip_prefix(root) {
+            Ok(r) => r.to_string_lossy().replace('\\', "/"),
+            Err(_) => continue,
+        };
+
+        let ext = file_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        let lang = match Language::from_extension(ext) {
+            Some(l) => l,
+            None => continue,
+        };
+
+        let source = match std::fs::read(file_path) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+
+        let raw_imports = extract_imports(&source, lang);
+        let mut imports = Vec::new();
+
+        for (import_path, symbols) in raw_imports {
+            let resolved = resolve_import(&import_path, lang, &rel, &all_files);
+            let external = resolved.is_none();
+            let path = resolved.unwrap_or_else(|| import_path.clone());
+            imports.push(ImportInfo {
+                path,
+                symbols,
+                external,
+            });
+        }
+
+        graph.insert(rel, FileImports { imports });
+    }
+
+    DepsGraph {
+        version: DEPS_VERSION,
+        graph,
+    }
+}
+
+/// Query the dependency graph for a specific file.
+/// Returns formatted string with depends_on, used_by, and external sections.
+pub fn query_deps(graph: &DepsGraph, file: &str) -> String {
+    let mut out = String::new();
+
+    // depends_on: internal files this file imports
+    let depends_on: Vec<String> = graph
+        .graph
+        .get(file)
+        .map(|fi| {
+            fi.imports
+                .iter()
+                .filter(|i| !i.external)
+                .map(|i| i.path.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    out.push_str("depends_on:\n");
+    for dep in &depends_on {
+        out.push_str(&format!("  {dep}\n"));
+    }
+
+    // used_by: other files that import this file
+    let mut used_by: Vec<String> = Vec::new();
+    for (other_file, fi) in &graph.graph {
+        if other_file == file {
+            continue;
+        }
+        if fi
+            .imports
+            .iter()
+            .any(|i| !i.external && i.path == file)
+        {
+            used_by.push(other_file.clone());
+        }
+    }
+    used_by.sort();
+
+    out.push_str("used_by:\n");
+    for user in &used_by {
+        out.push_str(&format!("  {user}\n"));
+    }
+
+    // external: deduplicated external dependencies
+    let mut external: Vec<String> = graph
+        .graph
+        .get(file)
+        .map(|fi| {
+            fi.imports
+                .iter()
+                .filter(|i| i.external)
+                .map(|i| i.path.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    external.sort();
+    external.dedup();
+
+    out.push_str("external:\n");
+    for ext in &external {
+        out.push_str(&format!("  {ext}\n"));
+    }
+
+    out
+}
+
+pub fn deps_cache_path(root: &Path) -> PathBuf {
+    root.join(DEPS_DIR).join(DEPS_FILE)
+}
+
+pub fn load_deps_cache(root: &Path) -> Option<DepsGraph> {
+    let path = deps_cache_path(root);
+    let data = std::fs::read_to_string(&path).ok()?;
+    let graph: DepsGraph = serde_json::from_str(&data).ok()?;
+    if graph.version != DEPS_VERSION {
+        return None;
+    }
+    Some(graph)
+}
+
+pub fn save_deps_cache(root: &Path, graph: &DepsGraph) {
+    use fs2::FileExt;
+    let path = deps_cache_path(root);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let lock_path = path.with_extension("lock");
+    let lock_file = match std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+    {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("warning: could not open deps cache lock: {e}");
+            return;
+        }
+    };
+    if lock_file.lock_exclusive().is_err() {
+        eprintln!("warning: could not lock deps cache file");
+        return;
+    }
+    if let Ok(data) = serde_json::to_string_pretty(graph) {
+        let tmp = path.with_extension("tmp");
+        if std::fs::write(&tmp, data).is_ok() {
+            let _ = std::fs::rename(&tmp, &path);
+        } else {
+            eprintln!("warning: could not write deps cache temp file");
+        }
+    }
+    let _ = lock_file.unlock();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn rust_crate_import_resolves() {
+        let all_files = vec![
+            "src/codemap.rs".to_string(),
+            "src/index/mod.rs".to_string(),
+            "src/mcp.rs".to_string(),
+        ];
+        let result = resolve_import("crate::codemap", Language::Rust, "src/mcp.rs", &all_files);
+        assert_eq!(result, Some("src/codemap.rs".to_string()));
+    }
+
+    #[test]
+    fn rust_external_import_unresolved() {
+        let all_files = vec!["src/main.rs".to_string()];
+        let result = resolve_import("serde::Serialize", Language::Rust, "src/main.rs", &all_files);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn python_relative_import_resolves() {
+        let all_files = vec![
+            "src/auth.py".to_string(),
+            "src/api.py".to_string(),
+        ];
+        let result = resolve_import(".auth", Language::Python, "src/api.py", &all_files);
+        assert_eq!(result, Some("src/auth.py".to_string()));
+    }
+
+    #[test]
+    fn ts_relative_import_resolves() {
+        let all_files = vec![
+            "src/utils.ts".to_string(),
+            "src/main.ts".to_string(),
+        ];
+        let result = resolve_import("./utils", Language::TypeScript, "src/main.ts", &all_files);
+        assert_eq!(result, Some("src/utils.ts".to_string()));
+    }
+
+    #[test]
+    fn ts_bare_import_is_external() {
+        let all_files = vec!["src/main.ts".to_string()];
+        let result = resolve_import("express", Language::TypeScript, "src/main.ts", &all_files);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn build_graph_and_query() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir(&src).unwrap();
+        fs::write(
+            src.join("main.rs"),
+            "use crate::helper;\nfn main() { helper::run(); }\n",
+        )
+        .unwrap();
+        fs::write(src.join("helper.rs"), "pub fn run() {}\n").unwrap();
+
+        let files = vec![src.join("main.rs"), src.join("helper.rs")];
+        let graph = build_deps_graph(dir.path(), &files);
+
+        let main_deps = query_deps(&graph, "src/main.rs");
+        assert!(
+            main_deps.contains("depends_on:"),
+            "main should depend on helper:\n{main_deps}"
+        );
+        assert!(
+            main_deps.contains("src/helper.rs"),
+            "main should depend on helper:\n{main_deps}"
+        );
+
+        let helper_deps = query_deps(&graph, "src/helper.rs");
+        assert!(
+            helper_deps.contains("used_by:"),
+            "helper should be used by main:\n{helper_deps}"
+        );
+        assert!(
+            helper_deps.contains("src/main.rs"),
+            "helper should be used by main:\n{helper_deps}"
+        );
+    }
+}
