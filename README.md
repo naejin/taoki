@@ -1,14 +1,132 @@
 # Taoki
 
-A Claude Code plugin that gives Claude structural understanding of your codebase. Instead of reading entire files, Claude gets compact summaries — public types, function signatures, dependency graphs, and line numbers — so it can navigate large codebases faster and with far fewer tokens.
+**Structural code intelligence for Claude Code.** Instead of reading entire files, Claude gets compact summaries — public APIs, function signatures, dependency graphs — and navigates large codebases faster with 70–90% fewer tokens.
 
-Taoki provides three MCP tools:
+[![Release](https://img.shields.io/github/v/release/naejin/taoki?style=flat-square)](https://github.com/naejin/taoki/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](https://github.com/naejin/taoki/blob/master/LICENSE)
 
-- **`code_map`** — Scans a repository and returns a one-line-per-file summary showing public types, function signatures, and heuristic tags like `[entry-point]`, `[tests]`, `[error-types]`, `[module-root]`, `[data-models]`, `[interfaces]`, `[http-handlers]`, `[barrel-file]`, and `[cli]`. Results are cached (blake3 hashes), so repeated calls are near-instant.
-- **`index`** — Returns the structural skeleton of a single file: imports, type definitions, function signatures, impl blocks, and module declarations, all with line numbers. Test code is automatically detected and collapsed for all supported languages. Typically 70-90% fewer tokens than reading the full file.
-- **`dependencies`** — Shows what a file imports and what imports it. Returns internal dependencies (`depends_on`), reverse dependencies (`used_by`), and external packages. Use this for impact analysis before modifying a file.
+## Demo
 
-All tools use [tree-sitter](https://tree-sitter.github.io/) for accurate, fast parsing.
+**`code_map`** — one-line-per-file summary with heuristic tags:
+
+```
+src/codemap.rs (537 lines) [error-types]
+  public_types: CodeMapError
+  public_functions: walk_files_public(...), build_code_map(...)
+
+src/main.rs (136 lines) [entry-point]
+  public_types: (none)
+  public_functions: (none)
+
+src/mcp.rs (479 lines) [error-types]
+  public_types: JsonRpcRequest, JsonRpcResponse, JsonRpcError, ToolContent, ToolResult
+  public_functions: tool_definitions(), handle_request(...)
+```
+
+**`index`** — structural skeleton with line numbers:
+
+```
+imports: [1-3]
+  taoki::mcp
+  std::io::{self, BufRead, Write}
+
+types:
+  #[derive(Clone, Copy, PartialEq)]
+  enum Framing [6-9]
+    ContentLength
+    Jsonl
+
+fns:
+  read_message(reader: &mut impl BufRead) -> ... [11-37]
+  read_content_length_message(reader: &mut impl BufRead) -> ... [39-71]
+  write_message(writer: &mut impl Write, ...) [73-84]
+  main() [86-135]
+```
+
+**`dependencies`** — cross-file import/export graph:
+
+```
+depends_on:
+  src/index/mod.rs
+used_by:
+  src/codemap.rs
+external:
+  serde::Deserialize
+  serde::Serialize
+  std::collections::HashMap
+  tree_sitter::Parser
+```
+
+## Features
+
+- **Three tools** — `code_map` (repo overview), `index` (file skeleton), `dependencies` (import graph)
+- **70–90% fewer tokens** — Claude reads structure, not source, then targets specific line ranges
+- **Heuristic tags** — files auto-tagged as `[entry-point]`, `[tests]`, `[error-types]`, `[data-models]`, `[module-root]`, and more
+- **Test collapsing** — test code detected and collapsed across all supported languages
+- **Fast caching** — blake3 content hashing with file-level locking; repeated calls are near-instant
+- **Tree-sitter parsing** — accurate, fast, no regex heuristics
+- **6 languages** — Rust, Python, TypeScript, JavaScript, Go, Java
+
+## Install
+
+### Pre-built binary (recommended)
+
+**Linux / macOS:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.sh | bash
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.ps1 | iex
+```
+
+<details>
+<summary>Install a specific version</summary>
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.sh | bash -s -- v0.3.1
+```
+
+```powershell
+$env:TAOKI_VERSION="v0.3.1"; irm https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.ps1 | iex
+```
+
+</details>
+
+### From source
+
+Requires [Rust](https://rustup.rs/).
+
+```bash
+git clone https://github.com/naejin/taoki.git
+claude plugin add ./taoki
+```
+
+The plugin compiles automatically on first use — no manual build step.
+
+## Usage
+
+Once installed, Claude automatically has access to the three tools. Use them through natural language:
+
+| You say | Claude calls |
+|---------|-------------|
+| "Map the codebase" | `code_map` |
+| "Show me the structure of src/auth.ts" | `index` |
+| "What depends on this file?" | `dependencies` |
+| "Map just the API routes" | `code_map` with globs |
+
+### Typical workflow
+
+```
+1. code_map     → understand architecture, find relevant files by [tags]
+2. dependencies → check impact via used_by before modifying anything
+3. index        → get structural skeleton with line numbers
+4. Read         → read only the specific line ranges you need
+5. Edit         → make targeted changes with full context
+```
 
 ## Supported Languages
 
@@ -21,65 +139,21 @@ All tools use [tree-sitter](https://tree-sitter.github.io/) for accurate, fast p
 | Go | `.go` |
 | Java | `.java` |
 
-## Install
+## How It Works
 
-### Quick install (no Rust required)
+Taoki runs as an [MCP](https://modelcontextprotocol.io/) server over stdio. When Claude starts a session, it can call the three tools at any time:
 
-**Linux / macOS:**
+- **`code_map`** walks the repo (respecting `.gitignore`), hashes each file with [blake3](https://github.com/BLAKE3-team/BLAKE3), and extracts public API summaries using [tree-sitter](https://tree-sitter.github.io/). Results cached at `.cache/taoki/code-map.json`.
+- **`index`** parses a single file and returns its structural skeleton. Test code is automatically detected and collapsed — Python (`test_*`, `Test*`), Go (`Test*`, `Benchmark*`), TypeScript/JS (`describe`, `it`, `test`), Rust (`#[test]`, `#[cfg(test)]`). Files matching test naming patterns are collapsed entirely.
+- **`dependencies`** queries a cached dependency graph (`.cache/taoki/deps.json`) showing internal imports, reverse dependencies, and external packages.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.sh | bash
-```
+## Caching
 
-**Windows (PowerShell):**
-
-```powershell
-irm https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.ps1 | iex
-```
-
-**Install a specific version:**
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.sh | bash -s -- v0.2.0
-```
-
-```powershell
-$env:TAOKI_VERSION="v0.2.0"; irm https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.ps1 | iex
-```
-
-### Build from source
-
-Requires a Rust toolchain (install via [rustup](https://rustup.rs/) if needed).
-
-```bash
-git clone https://github.com/naejin/taoki.git
-claude plugin add ./taoki
-```
-
-The first time Claude uses the plugin, it automatically compiles the binary (`cargo build --release`). No manual build step needed.
+Results are cached per-file using blake3 content hashes at `.cache/taoki/` in your repository. The cache is safe to delete at any time. Add `.cache/` to your `.gitignore`.
 
 ## Update
 
-Re-run the install script — it downloads the latest release and replaces the previous install:
-
-**Linux / macOS:**
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.sh | bash
-```
-
-**Windows (PowerShell):**
-
-```powershell
-irm https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.ps1 | iex
-```
-
-**From source:**
-
-```bash
-cd /path/to/taoki
-git pull
-```
+Re-run the install script to upgrade to the latest release.
 
 ## Uninstall
 
@@ -88,58 +162,6 @@ curl -fsSL https://raw.githubusercontent.com/naejin/taoki/master/scripts/uninsta
 ```
 
 Or manually: `rm -rf ~/.claude/plugins/taoki`
-
-## How It Works
-
-When Claude starts a session, Taoki runs as an MCP server over stdio. Claude can call the three tools at any time during the conversation:
-
-1. **`code_map`** walks the repository (respecting `.gitignore`), hashes each file with blake3, and extracts public API summaries using tree-sitter. Each file gets heuristic tags based on its role (entry point, tests, data models, etc.). Results are cached at `.cache/taoki/code-map.json`. Also builds a dependency graph cached at `.cache/taoki/deps.json`.
-
-2. **`index`** parses a single file and returns its structural skeleton — everything you need to understand the file's architecture without reading every line. Test code is automatically detected and collapsed for Python (`test_*`, `Test*`), Go (`Test*`, `Benchmark*`, `Example*`), TypeScript/JavaScript (`describe`, `it`, `test`), and Rust (`#[test]`, `#[cfg(test)]`). Files matching test naming conventions (e.g., `test_auth.py`, `LoginTest.java`) are collapsed entirely.
-
-3. **`dependencies`** queries the dependency graph to show what a file imports and what imports it. This enables impact analysis — before modifying a file, check `used_by` to see what will be affected.
-
-## Usage in Practice
-
-### Orient in an unfamiliar codebase
-
-Ask Claude to map the project first:
-
-> "Map the codebase structure"
-
-Claude calls `code_map` and gets a full overview — every file, its public types, and exported functions — in a single response. This replaces several rounds of `find`, `grep`, and file reading.
-
-### Understand a file before editing
-
-> "Show me the structure of src/auth/middleware.ts"
-
-Claude calls `index` and sees every function signature, type, and import with line numbers. It can then read only the specific sections it needs with the `Read` tool, using the line numbers from the index.
-
-### Narrow scope with globs
-
-> "Map just the API routes"
-
-Claude calls `code_map` with a glob like `["src/routes/**/*.ts"]` to get a focused view of a subsystem.
-
-### Check impact before editing
-
-> "What files depend on src/auth/middleware.ts?"
-
-Claude calls `dependencies` and sees which files import the middleware. This prevents breaking changes by showing the blast radius before any edits.
-
-### Typical workflow
-
-1. `code_map` on the repo — understand architecture, use `[tags]` to find relevant files
-2. `dependencies` on files you plan to modify — check impact via `used_by`
-3. `index` on key files — get structural skeleton with line numbers
-4. `Read` specific line ranges identified from the index
-5. Make targeted edits with full context
-
-This pattern uses significantly fewer tokens than reading files end-to-end, and gives Claude a better mental model of how the code is organized.
-
-## Caching
-
-Taoki caches results per-file using blake3 content hashes. The cache lives at `.cache/taoki/` in the scanned repository (`code-map.json` for the structural map, `deps.json` for the dependency graph) and is safe to delete at any time. Add `.cache/taoki/` to your `.gitignore` (Taoki does not do this automatically).
 
 ## License
 
