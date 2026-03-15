@@ -1,13 +1,14 @@
 # Taoki
 
-A Claude Code plugin that gives Claude structural understanding of your codebase. Instead of reading entire files, Claude gets compact summaries — public types, function signatures, and line numbers — so it can navigate large codebases faster and with far fewer tokens.
+A Claude Code plugin that gives Claude structural understanding of your codebase. Instead of reading entire files, Claude gets compact summaries — public types, function signatures, dependency graphs, and line numbers — so it can navigate large codebases faster and with far fewer tokens.
 
-Taoki provides two MCP tools:
+Taoki provides three MCP tools:
 
-- **`code_map`** — Scans a repository and returns a one-line-per-file summary showing public types and function signatures. Results are cached (blake3 hashes), so repeated calls are near-instant.
-- **`index`** — Returns the structural skeleton of a single file: imports, type definitions, function signatures, impl blocks, and module declarations, all with line numbers. Typically 70-90% fewer tokens than reading the full file.
+- **`code_map`** — Scans a repository and returns a one-line-per-file summary showing public types, function signatures, and heuristic tags like `[entry-point]`, `[tests]`, `[error-types]`, `[module-root]`, `[data-models]`, `[interfaces]`, `[http-handlers]`, `[barrel-file]`, and `[cli]`. Results are cached (blake3 hashes), so repeated calls are near-instant.
+- **`index`** — Returns the structural skeleton of a single file: imports, type definitions, function signatures, impl blocks, and module declarations, all with line numbers. Test code is automatically detected and collapsed for all supported languages. Typically 70-90% fewer tokens than reading the full file.
+- **`dependencies`** — Shows what a file imports and what imports it. Returns internal dependencies (`depends_on`), reverse dependencies (`used_by`), and external packages. Use this for impact analysis before modifying a file.
 
-Both tools use [tree-sitter](https://tree-sitter.github.io/) for accurate, fast parsing.
+All tools use [tree-sitter](https://tree-sitter.github.io/) for accurate, fast parsing.
 
 ## Supported Languages
 
@@ -48,11 +49,13 @@ rm -f target/release/taoki  # forces rebuild on next invocation
 
 ## How It Works
 
-When Claude starts a session, Taoki runs as an MCP server over stdio. Claude can call the two tools at any time during the conversation:
+When Claude starts a session, Taoki runs as an MCP server over stdio. Claude can call the three tools at any time during the conversation:
 
-1. **`code_map`** walks the repository (respecting `.gitignore`), hashes each file with blake3, and extracts public API summaries using tree-sitter. Results are cached at `.cache/taoki/code-map.json` inside the scanned repo.
+1. **`code_map`** walks the repository (respecting `.gitignore`), hashes each file with blake3, and extracts public API summaries using tree-sitter. Each file gets heuristic tags based on its role (entry point, tests, data models, etc.). Results are cached at `.cache/taoki/code-map.json`. Also builds a dependency graph cached at `.cache/taoki/deps.json`.
 
-2. **`index`** parses a single file and returns its structural skeleton — everything you need to understand the file's architecture without reading every line.
+2. **`index`** parses a single file and returns its structural skeleton — everything you need to understand the file's architecture without reading every line. Test code is automatically detected and collapsed for Python (`test_*`, `Test*`), Go (`Test*`, `Benchmark*`, `Example*`), TypeScript/JavaScript (`describe`, `it`, `test`), and Rust (`#[test]`, `#[cfg(test)]`). Files matching test naming conventions (e.g., `test_auth.py`, `LoginTest.java`) are collapsed entirely.
+
+3. **`dependencies`** queries the dependency graph to show what a file imports and what imports it. This enables impact analysis — before modifying a file, check `used_by` to see what will be affected.
 
 ## Usage in Practice
 
@@ -76,18 +79,25 @@ Claude calls `index` and sees every function signature, type, and import with li
 
 Claude calls `code_map` with a glob like `["src/routes/**/*.ts"]` to get a focused view of a subsystem.
 
+### Check impact before editing
+
+> "What files depend on src/auth/middleware.ts?"
+
+Claude calls `dependencies` and sees which files import the middleware. This prevents breaking changes by showing the blast radius before any edits.
+
 ### Typical workflow
 
-1. `code_map` on the repo to understand the high-level architecture
-2. `index` on the files most relevant to the task
-3. `Read` specific line ranges identified from the index
-4. Make targeted edits with full context
+1. `code_map` on the repo — understand architecture, use `[tags]` to find relevant files
+2. `dependencies` on files you plan to modify — check impact via `used_by`
+3. `index` on key files — get structural skeleton with line numbers
+4. `Read` specific line ranges identified from the index
+5. Make targeted edits with full context
 
 This pattern uses significantly fewer tokens than reading files end-to-end, and gives Claude a better mental model of how the code is organized.
 
 ## Caching
 
-The `code_map` tool caches results per-file using blake3 content hashes. The cache lives at `.cache/taoki/` in the scanned repository and is safe to delete at any time. Add `.cache/taoki/` to your `.gitignore` (Taoki does not do this automatically).
+Taoki caches results per-file using blake3 content hashes. The cache lives at `.cache/taoki/` in the scanned repository (`code-map.json` for the structural map, `deps.json` for the dependency graph) and is safe to delete at any time. Add `.cache/taoki/` to your `.gitignore` (Taoki does not do this automatically).
 
 ## License
 
