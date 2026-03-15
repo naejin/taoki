@@ -267,6 +267,22 @@ fn call_index(args: &Value) -> ToolResult {
         };
     }
 
+    // If entire file is a test file by naming convention, collapse it
+    if is_test_filename(path) {
+        let total_lines = source.iter().filter(|&&b| b == b'\n').count() + 1;
+        let skeleton = format!("tests: [1-{}]\n", total_lines);
+        INDEX_CACHE.with(|cache| {
+            cache.borrow_mut().insert(path_buf.clone(), (hash.clone(), skeleton.clone()));
+        });
+        return ToolResult {
+            content: vec![ToolContent {
+                r#type: "text".to_string(),
+                text: skeleton,
+            }],
+            is_error: false,
+        };
+    }
+
     // Cache miss — parse and store
     match index::index_source(&source, lang) {
         Ok(skeleton) => {
@@ -289,6 +305,21 @@ fn call_index(args: &Value) -> ToolResult {
             is_error: true,
         },
     }
+}
+
+fn is_test_filename(path: &std::path::Path) -> bool {
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+    // Go: *_test.go
+    name.ends_with("_test.go")
+    // Python: test_*.py, *_test.py
+        || (matches!(ext, "py" | "pyi") && (stem.starts_with("test_") || stem.ends_with("_test")))
+    // TS/JS: *.test.ts, *.spec.ts, *.test.js, *.spec.js
+        || stem.ends_with(".test")
+        || stem.ends_with(".spec")
+    // Java: *Test.java, *Tests.java
+        || (ext == "java" && (stem.ends_with("Test") || stem.ends_with("Tests")))
 }
 
 fn call_code_map(args: &Value) -> ToolResult {
@@ -328,5 +359,25 @@ fn call_code_map(args: &Value) -> ToolResult {
             }],
             is_error: true,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_file_by_name_collapses_entirely() {
+        let dir = tempfile::tempdir().unwrap();
+        let test_file = dir.path().join("test_auth.py");
+        fs::write(&test_file, "def test_login():\n    assert True\n\ndef test_logout():\n    pass\n").unwrap();
+
+        let args = serde_json::json!({ "path": test_file.to_str().unwrap() });
+        let result = call_index(&args);
+        assert!(!result.is_error);
+        let text = &result.content[0].text;
+        assert!(text.contains("tests:"), "should collapse entire file as tests:\n{text}");
+        assert!(!text.contains("test_login"), "individual test names should not appear:\n{text}");
     }
 }
