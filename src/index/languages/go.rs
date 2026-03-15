@@ -227,8 +227,16 @@ impl LanguageExtractor for GoExtractor {
         }
     }
 
-    fn is_test_node(&self, _node: Node, _source: &[u8], _attrs: &[Node]) -> bool {
-        false
+    fn is_test_node(&self, node: Node, source: &[u8], _attrs: &[Node]) -> bool {
+        if node.kind() != "function_declaration" {
+            return false;
+        }
+        node.child_by_field_name("name")
+            .map(|n| {
+                let name = node_text(n, source);
+                name.starts_with("Test") || name.starts_with("Benchmark") || name.starts_with("Example")
+            })
+            .unwrap_or(false)
     }
 
     fn is_doc_comment(&self, node: Node, _source: &[u8]) -> bool {
@@ -279,5 +287,40 @@ impl LanguageExtractor for GoExtractor {
             }
         }
         PublicApi { types, functions }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::index::{Language, index_source};
+
+    #[test]
+    fn go_test_functions_collapsed() {
+        let src = r#"
+package main
+
+func Helper() {}
+
+func TestLogin(t *testing.T) {
+    t.Log("test")
+}
+
+func BenchmarkSort(b *testing.B) {
+    b.Log("bench")
+}
+
+func ExampleFoo() {
+    fmt.Println("example")
+}
+
+func Process() {}
+"#;
+        let out = index_source(src.as_bytes(), Language::Go).unwrap();
+        assert!(out.contains("tests:"), "missing tests section in:\n{out}");
+        assert!(!out.contains("TestLogin"), "TestLogin should be collapsed in:\n{out}");
+        assert!(!out.contains("BenchmarkSort"), "BenchmarkSort should be collapsed in:\n{out}");
+        assert!(!out.contains("ExampleFoo"), "ExampleFoo should be collapsed in:\n{out}");
+        assert!(out.contains("Helper"), "Helper should be visible in:\n{out}");
+        assert!(out.contains("Process"), "Process should be visible in:\n{out}");
     }
 }
