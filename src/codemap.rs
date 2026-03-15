@@ -27,11 +27,16 @@ struct CacheEntry {
     lines: usize,
     public_types: Vec<String>,
     public_functions: Vec<String>,
+    #[serde(default)]
+    tags: Vec<String>,
 }
 
-const CACHE_VERSION: u32 = 1;
+const CACHE_VERSION: u32 = 2;
 const CACHE_DIR: &str = ".cache/taoki";
 const CACHE_FILE: &str = "code-map.json";
+
+/// (path, lines, public_types, public_functions, tags, parse_error)
+type FileResult = (String, usize, Vec<String>, Vec<String>, Vec<String>, bool);
 
 fn walk_files(root: &Path, globs: &[String]) -> Result<Vec<PathBuf>, CodeMapError> {
     use globset::{Glob, GlobSetBuilder};
@@ -162,6 +167,104 @@ fn save_cache(root: &Path, cache: &Cache) {
     let _ = lock_file.unlock();
 }
 
+fn compute_tags(
+    filename: &str,
+    public_types: &[String],
+    public_functions: &[String],
+    source: &[u8],
+) -> Vec<String> {
+    let mut tags = Vec::new();
+    let source_str = std::str::from_utf8(source).unwrap_or("");
+
+    // entry-point: has main()
+    if public_functions.iter().any(|f| f.starts_with("main(") || f == "main()")
+    {
+        tags.push("entry-point".to_string());
+    }
+    // Also check non-public main for languages where main isn't exported
+    if tags.is_empty()
+        && (source_str.contains("fn main()")
+            || source_str.contains("func main()")
+            || source_str.contains("def main(")
+            || source_str.contains("public static void main("))
+    {
+        tags.push("entry-point".to_string());
+    }
+
+    // tests: filename convention (extension-aware)
+    let fpath = std::path::Path::new(filename);
+    let stem = fpath.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let ext = fpath.extension().and_then(|s| s.to_str()).unwrap_or("");
+    if filename.ends_with("_test.go")
+        || (matches!(ext, "py" | "pyi") && (stem.starts_with("test_") || stem.ends_with("_test")))
+        || stem.ends_with(".test")
+        || stem.ends_with(".spec")
+        || (ext == "java" && (stem.ends_with("Test") || stem.ends_with("Tests")))
+    {
+        tags.push("tests".to_string());
+    }
+
+    // data-models: only types, no functions
+    if !public_types.is_empty() && public_functions.is_empty() {
+        tags.push("data-models".to_string());
+    }
+
+    // interfaces: defines traits/interfaces without implementations
+    if (source_str.contains("pub trait ") || source_str.contains("export interface ")
+        || source_str.contains("public interface "))
+        && !source_str.contains("impl ")
+    {
+        tags.push("interfaces".to_string());
+    }
+
+    // http-handlers: heuristic pattern matching
+    if source_str.contains("@GetMapping") || source_str.contains("@PostMapping")
+        || source_str.contains("@RequestMapping") || source_str.contains("@Path")
+        || source_str.contains("@app.route") || source_str.contains("@router.")
+        || source_str.contains("http.ResponseWriter") || source_str.contains("*http.Request")
+        || source_str.contains("#[get(") || source_str.contains("#[post(")
+        || source_str.contains("#[put(") || source_str.contains("#[delete(")
+    {
+        tags.push("http-handlers".to_string());
+    }
+
+    // error-types: types with Error/Exception in name
+    if public_types.iter().any(|t| t.contains("Error") || t.contains("Exception")) {
+        tags.push("error-types".to_string());
+    }
+
+    // barrel-file: mostly re-exports
+    let reexport_count = source_str.matches("pub use ").count()
+        + source_str.matches("pub mod ").count()
+        + source_str.matches("export * from").count()
+        + source_str.matches("export {").count();
+    let definition_count = public_functions.len() + public_types.len();
+    if reexport_count > definition_count && reexport_count >= 3 {
+        tags.push("barrel-file".to_string());
+    }
+
+    // cli: argument parsing patterns
+    if source_str.contains("clap::") || source_str.contains("#[derive(Parser")
+        || source_str.contains("argparse") || source_str.contains("ArgumentParser")
+        || source_str.contains("flag.Parse()") || source_str.contains("flag.String(")
+    {
+        tags.push("cli".to_string());
+    }
+
+    // module-root: specific filenames
+    if filename.ends_with("mod.rs")
+        || filename.ends_with("__init__.py")
+        || filename.ends_with("/index.ts")
+        || filename.ends_with("/index.js")
+        || filename.ends_with("/index.tsx")
+        || filename.ends_with("/index.jsx")
+    {
+        tags.push("module-root".to_string());
+    }
+
+    tags
+}
+
 pub fn build_code_map(root: &Path, globs: &[String]) -> Result<String, CodeMapError> {
     let files = walk_files(root, globs)?;
     let mut cache = load_cache(root);
@@ -175,7 +278,7 @@ pub fn build_code_map(root: &Path, globs: &[String]) -> Result<String, CodeMapEr
     }
 
     let mut new_files: HashMap<String, CacheEntry> = HashMap::new();
-    let mut results: Vec<(String, usize, Vec<String>, Vec<String>, bool)> = Vec::new();
+    let mut results: Vec<FileResult> = Vec::new();
 
     for file_path in &files {
         let rel = file_path
@@ -197,6 +300,7 @@ pub fn build_code_map(root: &Path, globs: &[String]) -> Result<String, CodeMapEr
                     cached.lines,
                     cached.public_types.clone(),
                     cached.public_functions.clone(),
+                    cached.tags.clone(),
                     false,
                 ));
                 new_files.insert(rel, CacheEntry {
@@ -204,6 +308,7 @@ pub fn build_code_map(root: &Path, globs: &[String]) -> Result<String, CodeMapEr
                     lines: cached.lines,
                     public_types: cached.public_types.clone(),
                     public_functions: cached.public_functions.clone(),
+                    tags: cached.tags.clone(),
                 });
                 continue;
             }
@@ -226,10 +331,12 @@ pub fn build_code_map(root: &Path, globs: &[String]) -> Result<String, CodeMapEr
             match index::extract_public_api(&source, lang) {
                 Ok(api) => api,
                 Err(_) => {
-                    results.push((rel.clone(), lines, Vec::new(), Vec::new(), true));
+                    results.push((rel.clone(), lines, Vec::new(), Vec::new(), Vec::new(), true));
                     continue;
                 }
             };
+
+        let tags = compute_tags(&rel, &public_types, &public_functions, &source);
 
         new_files.insert(
             rel.clone(),
@@ -238,10 +345,11 @@ pub fn build_code_map(root: &Path, globs: &[String]) -> Result<String, CodeMapEr
                 lines,
                 public_types: public_types.clone(),
                 public_functions: public_functions.clone(),
+                tags: tags.clone(),
             },
         );
 
-        results.push((rel, lines, public_types, public_functions, false));
+        results.push((rel, lines, public_types, public_functions, tags, false));
     }
 
     // Update and save cache
@@ -252,11 +360,16 @@ pub fn build_code_map(root: &Path, globs: &[String]) -> Result<String, CodeMapEr
     results.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut out = String::new();
-    for (path, lines, types, fns, parse_error) in &results {
+    for (path, lines, types, fns, tags, parse_error) in &results {
         if *parse_error {
             out.push_str(&format!("- {path} ({lines} lines) (parse error)\n"));
             continue;
         }
+        let tags_str = if tags.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", tags.iter().map(|t| format!("[{t}]")).collect::<Vec<_>>().join(" "))
+        };
         let types_str = if types.is_empty() {
             "(none)".to_string()
         } else {
@@ -268,7 +381,7 @@ pub fn build_code_map(root: &Path, globs: &[String]) -> Result<String, CodeMapEr
             fns.join(", ")
         };
         out.push_str(&format!(
-            "- {path} ({lines} lines) - public_types: {types_str} - public_functions: {fns_str}\n"
+            "- {path} ({lines} lines){tags_str} - public_types: {types_str} - public_functions: {fns_str}\n"
         ));
     }
 
@@ -312,5 +425,47 @@ mod tests {
         let r3 = build_code_map(dir.path(), &[]).unwrap();
         assert!(r3.contains("Bar"));
         assert!(!r3.contains("Foo"));
+    }
+
+    #[test]
+    fn tags_entry_point() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("main.rs");
+        fs::write(&file, "fn main() {}\n").unwrap();
+
+        let result = build_code_map(dir.path(), &[]).unwrap();
+        assert!(result.contains("[entry-point]"), "missing entry-point tag in:\n{result}");
+    }
+
+    #[test]
+    fn tags_tests_by_filename() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test_auth.py");
+        fs::write(&file, "def test_login():\n    pass\n").unwrap();
+
+        let result = build_code_map(dir.path(), &[]).unwrap();
+        assert!(result.contains("[tests]"), "missing tests tag in:\n{result}");
+    }
+
+    #[test]
+    fn tags_module_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("pkg");
+        fs::create_dir(&sub).unwrap();
+        let file = sub.join("mod.rs");
+        fs::write(&file, "pub fn foo() {}\n").unwrap();
+
+        let result = build_code_map(dir.path(), &[]).unwrap();
+        assert!(result.contains("[module-root]"), "missing module-root tag in:\n{result}");
+    }
+
+    #[test]
+    fn tags_error_types() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("errors.rs");
+        fs::write(&file, "pub enum MyError { Io, Parse }\n").unwrap();
+
+        let result = build_code_map(dir.path(), &[]).unwrap();
+        assert!(result.contains("[error-types]"), "missing error-types tag in:\n{result}");
     }
 }
