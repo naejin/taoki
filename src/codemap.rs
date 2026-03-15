@@ -171,6 +171,26 @@ fn save_cache(root: &Path, cache: &Cache) {
     let _ = lock_file.unlock();
 }
 
+/// Check if any line in source starts with one of the given patterns.
+/// This avoids false positives from string literals containing patterns.
+fn any_line_starts_with(source: &str, patterns: &[&str]) -> bool {
+    source.lines().any(|line| {
+        let trimmed = line.trim();
+        patterns.iter().any(|p| trimmed.starts_with(p))
+    })
+}
+
+/// Count lines starting with any of the given patterns.
+fn count_lines_starting_with(source: &str, patterns: &[&str]) -> usize {
+    source
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            patterns.iter().any(|p| trimmed.starts_with(p))
+        })
+        .count()
+}
+
 fn compute_tags(
     filename: &str,
     public_types: &[String],
@@ -179,26 +199,33 @@ fn compute_tags(
 ) -> Vec<String> {
     let mut tags = Vec::new();
     let source_str = std::str::from_utf8(source).unwrap_or("");
-
-    // entry-point: has main()
-    if public_functions.iter().any(|f| f.starts_with("main(") || f == "main()")
-    {
-        tags.push("entry-point".to_string());
-    }
-    // Also check non-public main for languages where main isn't exported
-    if tags.is_empty()
-        && (source_str.contains("fn main()")
-            || source_str.contains("func main()")
-            || source_str.contains("def main(")
-            || source_str.contains("public static void main("))
-    {
-        tags.push("entry-point".to_string());
-    }
-
-    // tests: filename convention (extension-aware)
     let fpath = std::path::Path::new(filename);
     let stem = fpath.file_stem().and_then(|s| s.to_str()).unwrap_or("");
     let ext = fpath.extension().and_then(|s| s.to_str()).unwrap_or("");
+
+    // entry-point: has main() in public API
+    if public_functions
+        .iter()
+        .any(|f| f.starts_with("main(") || f == "main()")
+    {
+        tags.push("entry-point".to_string());
+    }
+    // Also check non-public main via line-start matching, but only for the
+    // file's own language to avoid false positives from embedded test strings
+    if tags.is_empty() {
+        let main_pattern: &[&str] = match ext {
+            "rs" => &["fn main()"],
+            "go" => &["func main()"],
+            "py" | "pyi" => &["def main("],
+            "java" => &["public static void main("],
+            _ => &[],
+        };
+        if !main_pattern.is_empty() && any_line_starts_with(source_str, main_pattern) {
+            tags.push("entry-point".to_string());
+        }
+    }
+
+    // tests: filename convention (extension-aware)
     if filename.ends_with("_test.go")
         || (matches!(ext, "py" | "pyi") && (stem.starts_with("test_") || stem.ends_with("_test")))
         || stem.ends_with(".test")
@@ -214,43 +241,71 @@ fn compute_tags(
     }
 
     // interfaces: defines traits/interfaces without implementations
-    if (source_str.contains("pub trait ") || source_str.contains("export interface ")
-        || source_str.contains("public interface "))
-        && !source_str.contains("impl ")
+    if any_line_starts_with(
+        source_str,
+        &["pub trait ", "export interface ", "public interface "],
+    ) && !any_line_starts_with(source_str, &["impl "])
     {
         tags.push("interfaces".to_string());
     }
 
-    // http-handlers: heuristic pattern matching
-    if source_str.contains("@GetMapping") || source_str.contains("@PostMapping")
-        || source_str.contains("@RequestMapping") || source_str.contains("@Path")
-        || source_str.contains("@app.route") || source_str.contains("@router.")
-        || source_str.contains("http.ResponseWriter") || source_str.contains("*http.Request")
-        || source_str.contains("#[get(") || source_str.contains("#[post(")
-        || source_str.contains("#[put(") || source_str.contains("#[delete(")
+    // http-handlers: line-start anchored to avoid matching string literals
+    if any_line_starts_with(
+        source_str,
+        &[
+            "@GetMapping",
+            "@PostMapping",
+            "@RequestMapping",
+            "@Path",
+            "@app.route",
+            "@router.",
+            "#[get(",
+            "#[post(",
+            "#[put(",
+            "#[delete(",
+        ],
+    ) || source_str
+        .lines()
+        .any(|l| {
+            let t = l.trim();
+            (t.contains("http.ResponseWriter") || t.contains("*http.Request"))
+                && t.starts_with("func ")
+        })
     {
         tags.push("http-handlers".to_string());
     }
 
     // error-types: types with Error/Exception in name
-    if public_types.iter().any(|t| t.contains("Error") || t.contains("Exception")) {
+    if public_types
+        .iter()
+        .any(|t| t.contains("Error") || t.contains("Exception"))
+    {
         tags.push("error-types".to_string());
     }
 
-    // barrel-file: mostly re-exports
-    let reexport_count = source_str.matches("pub use ").count()
-        + source_str.matches("pub mod ").count()
-        + source_str.matches("export * from").count()
-        + source_str.matches("export {").count();
+    // barrel-file: mostly re-exports (line-start anchored)
+    let reexport_count = count_lines_starting_with(
+        source_str,
+        &["pub use ", "pub mod ", "export * from", "export {"],
+    );
     let definition_count = public_functions.len() + public_types.len();
     if reexport_count > definition_count && reexport_count >= 3 {
         tags.push("barrel-file".to_string());
     }
 
-    // cli: argument parsing patterns
-    if source_str.contains("clap::") || source_str.contains("#[derive(Parser")
-        || source_str.contains("argparse") || source_str.contains("ArgumentParser")
-        || source_str.contains("flag.Parse()") || source_str.contains("flag.String(")
+    // cli: line-start anchored
+    if any_line_starts_with(
+        source_str,
+        &[
+            "use clap",
+            "#[derive(Parser",
+            "import argparse",
+            "from argparse",
+        ],
+    ) || source_str.lines().any(|l| {
+        let t = l.trim();
+        t.starts_with("flag.Parse()") || t.starts_with("flag.String(")
+    })
     {
         tags.push("cli".to_string());
     }
