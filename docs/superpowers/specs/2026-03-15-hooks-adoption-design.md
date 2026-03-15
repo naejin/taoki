@@ -12,55 +12,94 @@ Make Claude and all agents/subagents consistently use Taoki tools before reading
 
 ### 1. hooks/hooks.json
 
-Three hooks in a single `hooks/hooks.json` file:
-
-**Hook 1: SessionStart — Tool awareness**
+Three hooks in a single `hooks/hooks.json` file using the correct top-level structure:
 
 ```json
 {
-  "matcher": "*",
+  "hooks": {
+    "SessionStart": [ ... ],
+    "PreToolUse": [ ..., ... ]
+  }
+}
+```
+
+**Hook 1: SessionStart — Tool awareness (command-based)**
+
+SessionStart only supports `type: "command"` hooks (not prompt). The command's stdout is injected into Claude's context.
+
+```json
+{
+  "matcher": "",
   "hooks": [
     {
-      "type": "prompt",
-      "prompt": "You have structural code intelligence tools available via the taoki plugin. Before reading source files, use: mcp__taoki__code_map (repo overview with tags), mcp__taoki__index (file skeleton with line numbers — 70-90% fewer tokens than reading), mcp__taoki__dependencies (import/export graph for impact analysis). Always call code_map first when exploring a codebase, and index before reading any source file."
+      "type": "command",
+      "command": "echo 'You have structural code intelligence tools available via the taoki plugin. Before reading source files, use: mcp__taoki__code_map (repo overview with tags), mcp__taoki__index (file skeleton with line numbers — 70-90% fewer tokens than reading), mcp__taoki__dependencies (import/export graph for impact analysis). Always call code_map first when exploring a codebase, and index before reading any source file.'"
     }
   ]
 }
 ```
 
-Fires on session start, resume, clear, and compact. Ensures Claude knows about Taoki tools from the first message.
+Fires on session start, resume, clear, and compact (empty matcher matches all session sources). Ensures Claude knows about Taoki tools from the first message.
 
-**Hook 2: PreToolUse on Read — Soft gate for source files**
+**Hook 2: PreToolUse on Read — Soft gate for source files (command-based)**
 
 ```json
 {
   "matcher": "Read",
   "hooks": [
     {
-      "type": "prompt",
-      "prompt": "The agent is about to Read a file. Check the file path in $TOOL_INPUT. If the file extension is one of: .rs, .py, .pyi, .ts, .tsx, .js, .jsx, .mjs, .cjs, .go, .java — then return a systemMessage suggesting: 'Consider calling mcp__taoki__index on this file first to get its structure with line numbers, then Read only the specific sections you need. This typically saves 70-90% of tokens.' Set permissionDecision to 'allow' regardless. If the file is not a source file (e.g., .md, .json, .toml, .yaml, .txt, .lock), return nothing — let it pass silently."
+      "type": "command",
+      "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/check-read.sh"
     }
   ]
 }
 ```
 
-Does not block — always returns `allow`. Only nudges for supported source file extensions. Non-code files pass through silently.
+Uses a **command hook** (not prompt) for zero-latency, deterministic behavior. The `hooks/check-read.sh` script:
 
-**Hook 3: PreToolUse on Glob/Grep — Nudge toward code_map**
+1. Reads the tool input JSON from stdin (contains `tool_input.file_path`)
+2. Extracts the file extension
+3. If the extension is a supported source file (`.rs`, `.py`, `.pyi`, `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.go`, `.java`): outputs JSON with `hookSpecificOutput.permissionDecision: "allow"` and `hookSpecificOutput.additionalContext` nudging toward `mcp__taoki__index`
+4. If the extension is anything else: outputs JSON with `hookSpecificOutput.permissionDecision: "allow"` and no `additionalContext` (silent passthrough)
+
+Output format:
+```json
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "allow",
+    "additionalContext": "Consider calling mcp__taoki__index on this file first to get its structure with line numbers, then Read only the specific sections you need. This typically saves 70-90% of tokens."
+  }
+}
+```
+
+Always returns `allow` — never blocks. The nudge is injected via `additionalContext` only for source files.
+
+**Hook 3: PreToolUse on Glob — Nudge toward code_map (command-based)**
 
 ```json
 {
-  "matcher": "Glob|Grep",
+  "matcher": "Glob",
   "hooks": [
     {
-      "type": "prompt",
-      "prompt": "The agent is about to search the codebase with Glob or Grep. If this looks like an exploratory search (trying to understand project structure, find relevant files, or locate components), return a systemMessage: 'mcp__taoki__code_map gives you a one-line-per-file summary with heuristic tags like [entry-point], [tests], [data-models] — often faster and more structured than searching. Call it with the repo root path.' Set permissionDecision to 'allow'. If the search is for a specific string or pattern (e.g., searching for an error message, a variable name, or a known file path), return nothing — Grep/Glob is the right tool for that."
+      "type": "command",
+      "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/check-glob.sh"
     }
   ]
 }
 ```
 
-Only nudges for exploratory searches, not targeted lookups. Always allows the operation.
+Uses a command hook. The `hooks/check-glob.sh` script:
+
+1. Reads tool input from stdin
+2. Always outputs JSON with `hookSpecificOutput.permissionDecision: "allow"` and `hookSpecificOutput.additionalContext`: "Tip: mcp__taoki__code_map gives you a one-line-per-file summary with heuristic tags — often faster than globbing for project structure."
+
+**Note:** Grep is excluded from this hook. Grep is almost always a targeted search for a specific string — nudging toward code_map would be noise. Only Glob gets the nudge since it's more commonly used for exploratory file discovery.
+
+**Design decisions:**
+- PreToolUse hooks use **command type** (not prompt) to avoid LLM latency on every tool call. A shell script checking file extensions is near-instant.
+- SessionStart uses **command type** (echo) because SessionStart only supports command hooks. The stdout is injected into Claude's context automatically.
+- The Read hook fires on every source file Read, including after an index call. This is acceptable — the nudge is lightweight (a system message, not a block) and reinforces the habit without disrupting the flow.
 
 ### 2. Updated skill description
 
