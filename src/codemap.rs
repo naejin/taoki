@@ -88,6 +88,10 @@ fn walk_files(root: &Path, globs: &[String]) -> Result<Vec<PathBuf>, CodeMapErro
     Ok(files)
 }
 
+pub fn walk_files_public(root: &Path) -> Result<Vec<PathBuf>, CodeMapError> {
+    walk_files(root, &[])
+}
+
 fn hash_file(path: &Path) -> std::io::Result<String> {
     let data = std::fs::read(path)?;
     Ok(blake3::hash(&data).to_hex().to_string())
@@ -355,6 +359,12 @@ pub fn build_code_map(root: &Path, globs: &[String]) -> Result<String, CodeMapEr
     // Update and save cache
     cache.files = new_files;
     save_cache(root, &cache);
+
+    // Build and cache dependency graph alongside code map
+    // Note: This rebuilds the full graph on every code_map call. Per-file incremental
+    // updates (skip unchanged files) is a Phase 2 optimization.
+    let graph = crate::deps::build_deps_graph(root, &files);
+    crate::deps::save_deps_cache(root, &graph);
 
     // Sort by path and format output
     results.sort_by(|a, b| a.0.cmp(&b.0));

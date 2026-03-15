@@ -112,6 +112,24 @@ pub fn tool_definitions() -> Value {
                     },
                     "required": ["path"]
                 }
+            },
+            {
+                "name": "dependencies",
+                "description": "Show what a file imports and what imports it. Returns dependency and dependent files with the specific symbols used. Automatically builds the dependency graph if not cached. Use this to understand impact before modifying a file.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "file": {
+                            "type": "string",
+                            "description": "Absolute path to the source file to query"
+                        },
+                        "repo_root": {
+                            "type": "string",
+                            "description": "Absolute path to the repository root"
+                        }
+                    },
+                    "required": ["file", "repo_root"]
+                }
             }
         ]
     })
@@ -161,6 +179,7 @@ fn handle_tools_call(req: &JsonRpcRequest) -> JsonRpcResponse {
     let result = match tool_name {
         "index" => call_index(&arguments),
         "code_map" => call_code_map(&arguments),
+        "dependencies" => call_dependencies(&arguments),
         _ => ToolResult {
             content: vec![ToolContent {
                 r#type: "text".to_string(),
@@ -362,10 +381,86 @@ fn call_code_map(args: &Value) -> ToolResult {
     }
 }
 
+fn call_dependencies(args: &Value) -> ToolResult {
+    let file_str = args.get("file").and_then(|v| v.as_str()).unwrap_or("");
+    let root_str = args.get("repo_root").and_then(|v| v.as_str()).unwrap_or("");
+
+    if file_str.is_empty() || root_str.is_empty() {
+        return ToolResult {
+            content: vec![ToolContent {
+                r#type: "text".to_string(),
+                text: "missing required parameters: file, repo_root".to_string(),
+            }],
+            is_error: true,
+        };
+    }
+
+    let root = std::path::Path::new(root_str);
+    let file_path = std::path::Path::new(file_str);
+
+    let rel = file_path
+        .strip_prefix(root)
+        .unwrap_or(file_path)
+        .to_string_lossy()
+        .to_string();
+
+    // Try loading cached graph, build if missing
+    let graph = match crate::deps::load_deps_cache(root) {
+        Some(g) => g,
+        None => {
+            // Build graph by walking all files
+            let files = match crate::codemap::walk_files_public(root) {
+                Ok(f) => f,
+                Err(e) => {
+                    return ToolResult {
+                        content: vec![ToolContent {
+                            r#type: "text".to_string(),
+                            text: format!("failed to walk files: {e}"),
+                        }],
+                        is_error: true,
+                    };
+                }
+            };
+            let g = crate::deps::build_deps_graph(root, &files);
+            crate::deps::save_deps_cache(root, &g);
+            g
+        }
+    };
+
+    let output = crate::deps::query_deps(&graph, &rel);
+
+    ToolResult {
+        content: vec![ToolContent {
+            r#type: "text".to_string(),
+            text: output,
+        }],
+        is_error: false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn dependencies_tool_returns_deps() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("main.rs"), "use crate::helper;\nfn main() { helper::run(); }\n").unwrap();
+        fs::write(src.join("helper.rs"), "pub fn run() {}\n").unwrap();
+
+        let args = serde_json::json!({
+            "file": src.join("main.rs").to_str().unwrap(),
+            "repo_root": dir.path().to_str().unwrap(),
+        });
+        let result = call_dependencies(&args);
+        assert!(!result.is_error, "should not error: {:?}", result.content);
+        let text = &result.content[0].text;
+        assert!(text.contains("depends_on:") || text.contains("external:"),
+            "should show dependencies:\n{text}");
+    }
 
     #[test]
     fn test_file_by_name_collapses_entirely() {
