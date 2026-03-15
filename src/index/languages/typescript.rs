@@ -212,8 +212,18 @@ impl LanguageExtractor for TsJsExtractor {
         entry.into_iter().collect()
     }
 
-    fn is_test_node(&self, _node: Node, _source: &[u8], _attrs: &[Node]) -> bool {
-        false
+    fn is_test_node(&self, node: Node, source: &[u8], _attrs: &[Node]) -> bool {
+        // Match expression_statement nodes containing describe(), it(), test() calls
+        if node.kind() != "expression_statement" {
+            return false;
+        }
+        let Some(expr) = node.child(0) else { return false };
+        if expr.kind() != "call_expression" {
+            return false;
+        }
+        let Some(func) = expr.child_by_field_name("function") else { return false };
+        let name = node_text(func, source);
+        matches!(name, "describe" | "it" | "test")
     }
 
     fn is_doc_comment(&self, node: Node, source: &[u8]) -> bool {
@@ -266,5 +276,34 @@ impl LanguageExtractor for TsJsExtractor {
             }
         }
         PublicApi { types, functions }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::index::{Language, index_source};
+
+    #[test]
+    fn ts_test_calls_collapsed() {
+        let src = "\
+import { expect } from 'vitest';
+
+export function helper(): string { return ''; }
+
+describe('auth', () => {
+  it('should login', () => {
+    expect(true).toBe(true);
+  });
+});
+
+test('standalone test', () => {
+  expect(1).toBe(1);
+});
+";
+        let out = index_source(src.as_bytes(), Language::TypeScript).unwrap();
+        assert!(out.contains("tests:"), "missing tests section in:\n{out}");
+        assert!(!out.contains("describe"), "describe should be collapsed in:\n{out}");
+        assert!(!out.contains("standalone"), "standalone test should be collapsed in:\n{out}");
+        assert!(out.contains("helper"), "helper should be visible in:\n{out}");
     }
 }
