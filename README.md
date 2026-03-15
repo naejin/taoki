@@ -81,6 +81,14 @@ cd /path/to/taoki
 git pull
 ```
 
+## Uninstall
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/naejin/taoki/master/scripts/uninstall.sh | bash
+```
+
+Or manually: `rm -rf ~/.claude/plugins/taoki`
+
 ## How It Works
 
 When Claude starts a session, Taoki runs as an MCP server over stdio. Claude can call the three tools at any time during the conversation:
