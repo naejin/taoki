@@ -6,12 +6,14 @@ use tree_sitter::{Node, Parser};
 mod languages;
 
 pub(crate) const FIELD_TRUNCATE_THRESHOLD: usize = 8;
-const MAX_FILE_SIZE: u64 = 2 * 1024 * 1024;
+pub(crate) const MAX_FILE_SIZE: u64 = 2 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum IndexError {
+    #[allow(dead_code)]
     #[error("unsupported file type: {0}")]
     UnsupportedLanguage(String),
+    #[allow(dead_code)]
     #[error("file too large ({size} bytes, max {max})")]
     FileTooLarge { size: u64, max: u64 },
     #[error("read error: {0}")]
@@ -385,6 +387,7 @@ fn format_imports(out: &mut String, entries: &[&SkeletonEntry]) {
     }
 }
 
+#[allow(dead_code)]
 pub fn index_file(path: &Path) -> Result<String, IndexError> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let lang = Language::from_extension(ext)

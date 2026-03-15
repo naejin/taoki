@@ -1,8 +1,16 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::codemap;
 use crate::index;
+
+thread_local! {
+    static INDEX_CACHE: RefCell<HashMap<PathBuf, (String, String)>> = RefCell::new(HashMap::new());
+}
 
 #[derive(Debug, Deserialize)]
 pub struct JsonRpcRequest {
@@ -111,9 +119,7 @@ pub fn tool_definitions() -> Value {
 
 pub fn handle_request(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
     // Notifications (no id) must never receive a response per JSON-RPC spec
-    if req.id.is_none() {
-        return None;
-    }
+    req.id.as_ref()?;
 
     match req.method.as_str() {
         "initialize" => Some(handle_initialize(req)),
@@ -168,8 +174,8 @@ fn handle_tools_call(req: &JsonRpcRequest) -> JsonRpcResponse {
 }
 
 fn call_index(args: &Value) -> ToolResult {
-    let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-    if path.is_empty() {
+    let path_str = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+    if path_str.is_empty() {
         return ToolResult {
             content: vec![ToolContent {
                 r#type: "text".to_string(),
@@ -179,14 +185,102 @@ fn call_index(args: &Value) -> ToolResult {
         };
     }
 
-    match index::index_file(std::path::Path::new(path)) {
-        Ok(skeleton) => ToolResult {
+    let path = std::path::Path::new(path_str);
+
+    // Read file and determine language
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let lang = match index::Language::from_extension(ext) {
+        Some(l) => l,
+        None => {
+            return ToolResult {
+                content: vec![ToolContent {
+                    r#type: "text".to_string(),
+                    text: format!("unsupported file type: .{ext}"),
+                }],
+                is_error: true,
+            };
+        }
+    };
+
+    let meta = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(e) => {
+            return ToolResult {
+                content: vec![ToolContent {
+                    r#type: "text".to_string(),
+                    text: format!("read error: {e}"),
+                }],
+                is_error: true,
+            };
+        }
+    };
+
+    if meta.len() > index::MAX_FILE_SIZE {
+        return ToolResult {
+            content: vec![ToolContent {
+                r#type: "text".to_string(),
+                text: format!(
+                    "file too large ({} bytes, max {})",
+                    meta.len(),
+                    index::MAX_FILE_SIZE
+                ),
+            }],
+            is_error: true,
+        };
+    }
+
+    let source = match std::fs::read(path) {
+        Ok(s) => s,
+        Err(e) => {
+            return ToolResult {
+                content: vec![ToolContent {
+                    r#type: "text".to_string(),
+                    text: format!("read error: {e}"),
+                }],
+                is_error: true,
+            };
+        }
+    };
+
+    let hash = blake3::hash(&source).to_hex().to_string();
+    let path_buf = path.to_path_buf();
+
+    // Check in-memory cache
+    let cached = INDEX_CACHE.with(|cache| {
+        let cache = cache.borrow();
+        cache.get(&path_buf).and_then(|(h, skeleton)| {
+            if *h == hash {
+                Some(skeleton.clone())
+            } else {
+                None
+            }
+        })
+    });
+
+    if let Some(skeleton) = cached {
+        return ToolResult {
             content: vec![ToolContent {
                 r#type: "text".to_string(),
                 text: skeleton,
             }],
             is_error: false,
-        },
+        };
+    }
+
+    // Cache miss — parse and store
+    match index::index_source(&source, lang) {
+        Ok(skeleton) => {
+            INDEX_CACHE.with(|cache| {
+                cache.borrow_mut().insert(path_buf, (hash, skeleton.clone()));
+            });
+            ToolResult {
+                content: vec![ToolContent {
+                    r#type: "text".to_string(),
+                    text: skeleton,
+                }],
+                is_error: false,
+            }
+        }
         Err(e) => ToolResult {
             content: vec![ToolContent {
                 r#type: "text".to_string(),
