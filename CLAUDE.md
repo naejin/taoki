@@ -7,7 +7,7 @@ MCP (Model Context Protocol) server that provides structural code intelligence t
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"  # Rust toolchain not in default PATH
 cargo build
-cargo test                             # 29 unit tests, all inline (#[cfg(test)])
+cargo test                             # 31 unit tests, all inline (#[cfg(test)])
 cargo clippy                           # must pass with no warnings
 ```
 
@@ -21,7 +21,7 @@ Four modules under `src/`:
 - **`mcp.rs`** — JSON-RPC dispatch. Routes `initialize`, `ping`, `tools/list`, `tools/call`. Tool calls dispatch to `call_index`, `call_code_map`, and `call_dependencies`. Also handles filename-based test file detection (collapses entire test files in `index` output).
 - **`codemap.rs`** — `build_code_map()` walks a repo (respecting .gitignore), hashes files with blake3, caches results in `.cache/taoki/code-map.json` with file-level locking (fs2). Calls `index::extract_public_api` for each file. Computes heuristic tags per file (`[entry-point]`, `[tests]`, `[error-types]`, `[module-root]`, etc.). Also triggers dependency graph building via `deps.rs`.
 - **`deps.rs`** — Cross-file dependency graph. Extracts imports from source files using tree-sitter, resolves them to actual files in the repo (best-effort, language-specific), and builds a cached graph. Provides `query_deps()` to show depends_on/used_by/external for any file. Cache stored at `.cache/taoki/deps.json`.
-- **`index/`** — `index_file()` and `index_source()` use tree-sitter to parse source files and extract structural skeletons (imports, types, functions, impls, modules). Language-specific extractors live in `index/languages/` — one file per language. TypeScript and JavaScript share `typescript.rs`. Each extractor implements `is_test_node()` to detect and collapse test code.
+- **`index/`** — `index_file()` and `index_source()` use tree-sitter to parse source files and extract structural skeletons (imports, types, functions, impls, modules). Language-specific extractors live in `index/languages/` — one file per language. TypeScript and JavaScript share `typescript.rs`. Each extractor implements `is_test_node()` to detect and collapse test code. The `index` tool outputs sections: `imports:`, `consts:`, `exprs:` (top-level expressions for Python/TypeScript), `types:`, `traits:`, `impls:`, `fns:`, `classes:`, `mod:`, `macros:`, and `tests:`.
 
 ## Supported Languages
 
@@ -51,8 +51,18 @@ Taoki is distributed via pre-built binaries on GitHub Releases and install scrip
 - **Install scripts:** `scripts/install.sh` (Linux/macOS) and `scripts/install.ps1` (Windows). Both download the correct binary from GitHub Releases, verify SHA256 checksums, do an atomic swap install to `~/.claude/plugins/taoki/`, and register the plugin with Claude Code.
 - **MCP entry points:** `scripts/run.sh` (Unix) and `scripts/run.cmd` (Windows). These have 3-way fallback: exec binary if present, `cargo build` if `Cargo.toml` exists (source clone), otherwise error with install hint.
 - **Release pipeline:** `.github/workflows/release.yml` triggers on `v*` tags. Cross-compiles for 5 targets (linux x86_64/aarch64, macos x86_64/aarch64, windows x86_64) using `cross` for Linux ARM64. Packages binary + plugin files into tarballs/zips, generates `checksums.txt`, publishes a GitHub Release.
-- **Release artifacts include:** `.claude-plugin/`, `commands/`, `skills/`, `scripts/run.sh`, `scripts/run.cmd`, and the binary at `target/release/taoki`. Source code, docs, and install scripts are excluded.
+- **Release artifacts include:** `.claude-plugin/`, `commands/`, `skills/`, `hooks/`, `scripts/run.sh`, `scripts/run.cmd`, and the binary at `target/release/taoki`. Source code, docs, and install scripts are excluded.
 - **To publish a release:** `git tag v0.x.0 && git push origin v0.x.0`
+
+## Hooks
+
+Three hooks in `hooks/hooks.json` enforce Taoki tool usage:
+
+- **SessionStart:** Injects a message at session start reminding Claude about the three code intelligence tools and when to use them.
+- **PreToolUse (Read):** When Claude is about to Read a source file (`.rs`, `.py`, `.ts`, `.js`, `.go`, `.java`, etc.), injects a nudge suggesting `mcp__taoki__index` first. Does not block — always allows the Read.
+- **PreToolUse (Glob):** When Claude uses Glob, injects a tip about `mcp__taoki__code_map` as an alternative for structural exploration. Does not block.
+
+All hooks use command type (shell scripts) for zero-latency, deterministic behavior. Hook scripts are in `hooks/`.
 
 ## Warning
 
