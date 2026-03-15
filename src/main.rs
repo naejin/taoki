@@ -100,7 +100,9 @@ fn main() {
     loop {
         let raw = match read_message(&mut reader) {
             Ok(Some((m, f))) => {
-                framing = f;
+                if framing != f {
+                    framing = f;
+                }
                 m
             }
             Ok(None) => break,

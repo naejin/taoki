@@ -62,12 +62,111 @@ fn extract_rust_imports(root: tree_sitter::Node, source: &[u8]) -> Vec<(String, 
                 .trim_end_matches(';')
                 .trim()
                 .to_string();
-            if !cleaned.is_empty() {
-                result.push((cleaned, Vec::new()));
+            for path in expand_rust_use(&cleaned) {
+                if !path.is_empty() {
+                    result.push((path, Vec::new()));
+                }
             }
         }
     }
     result
+}
+
+fn expand_rust_use(path: &str) -> Vec<String> {
+    let path = path.trim();
+    let (start, end) = match find_top_level_braces(path) {
+        Some(r) => r,
+        None => return vec![path.to_string()],
+    };
+
+    let prefix = path[..start].trim().trim_end_matches("::").to_string();
+    let inner = path[start + 1..end].trim();
+
+    let mut out = Vec::new();
+    for item in split_top_level_items(inner) {
+        let item = item.trim();
+        if item.is_empty() {
+            continue;
+        }
+        if item == "self" {
+            if !prefix.is_empty() {
+                out.push(prefix.clone());
+            }
+            continue;
+        }
+        let combined = if item.starts_with("self::") {
+            let rest = item.trim_start_matches("self::");
+            join_prefix(&prefix, rest)
+        } else if item.contains('{') {
+            let nested = join_prefix(&prefix, item);
+            out.extend(expand_rust_use(&nested));
+            continue;
+        } else {
+            join_prefix(&prefix, item)
+        };
+        if !combined.is_empty() {
+            out.push(combined);
+        }
+    }
+
+    out
+}
+
+fn find_top_level_braces(s: &str) -> Option<(usize, usize)> {
+    let mut depth = 0usize;
+    let mut start = None;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '{' => {
+                if depth == 0 {
+                    start = Some(i);
+                }
+                depth += 1;
+            }
+            '}' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+                if depth == 0 {
+                    return start.map(|s| (s, i));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn split_top_level_items(s: &str) -> Vec<String> {
+    let mut items = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                items.push(s[start..i].to_string());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    if start <= s.len() {
+        items.push(s[start..].to_string());
+    }
+    items
+}
+
+fn join_prefix(prefix: &str, item: &str) -> String {
+    if prefix.is_empty() {
+        item.trim().to_string()
+    } else if item.is_empty() {
+        prefix.to_string()
+    } else {
+        format!("{prefix}::{item}")
+    }
 }
 
 fn extract_python_imports(root: tree_sitter::Node, source: &[u8]) -> Vec<(String, Vec<String>)> {
@@ -199,11 +298,10 @@ fn extract_java_imports(root: tree_sitter::Node, source: &[u8]) -> Vec<(String, 
                 .trim()
                 .to_string();
             if !cleaned.is_empty() {
-                // Split on last '.' to separate module from symbol
+                let cleaned = cleaned.strip_prefix("static ").unwrap_or(&cleaned).to_string();
                 if let Some(dot_pos) = cleaned.rfind('.') {
-                    let module = cleaned[..dot_pos].to_string();
                     let symbol = cleaned[dot_pos + 1..].to_string();
-                    result.push((module, vec![symbol]));
+                    result.push((cleaned, vec![symbol]));
                 } else {
                     result.push((cleaned, Vec::new()));
                 }
@@ -313,7 +411,9 @@ fn resolve_ts(import_path: &str, current_file: &str, all_files: &[String]) -> Op
     let joined = current_dir.join(import_path);
     let normalized = normalize_path(&joined);
 
-    let extensions = ["ts", "tsx", "js", "jsx", "mjs", "cjs"];
+    let extensions = [
+        "ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts", "d.ts", "d.tsx", "d.mts", "d.cts",
+    ];
 
     // Try with each extension appended
     for ext in &extensions {
@@ -337,13 +437,23 @@ fn resolve_ts(import_path: &str, current_file: &str, all_files: &[String]) -> Op
 }
 
 fn resolve_java(import_path: &str, all_files: &[String]) -> Option<String> {
-    // import_path is the module part (e.g. "java.util" for "java.util.List")
-    let path_str = import_path.replace('.', "/");
     let prefixes = ["", "src/main/java/", "src/"];
+    let path_str = import_path.replace('.', "/");
     for prefix in &prefixes {
         let candidate = format!("{prefix}{path_str}.java");
         if all_files.iter().any(|f| f == &candidate) {
             return Some(candidate);
+        }
+    }
+
+    if let Some(dot_pos) = import_path.rfind('.') {
+        let module = &import_path[..dot_pos];
+        let module_path = module.replace('.', "/");
+        for prefix in &prefixes {
+            let candidate = format!("{prefix}{module_path}.java");
+            if all_files.iter().any(|f| f == &candidate) {
+                return Some(candidate);
+            }
         }
     }
     None
@@ -586,6 +696,40 @@ mod tests {
         let all_files = vec!["src/main.ts".to_string()];
         let result = resolve_import("express", Language::TypeScript, "src/main.ts", &all_files);
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn rust_grouped_use_expands() {
+        let source = b"use crate::{a, b::c, self::d, e::{f, g}};\n";
+        let imports = extract_imports(source, Language::Rust);
+        let paths: Vec<String> = imports.into_iter().map(|(p, _)| p).collect();
+        assert!(paths.contains(&"crate::a".to_string()));
+        assert!(paths.contains(&"crate::b::c".to_string()));
+        assert!(paths.contains(&"crate::d".to_string()));
+        assert!(paths.contains(&"crate::e::f".to_string()));
+        assert!(paths.contains(&"crate::e::g".to_string()));
+    }
+
+    #[test]
+    fn java_import_resolves_internal_class() {
+        let all_files = vec!["src/main/java/com/example/Foo.java".to_string()];
+        let result = resolve_import(
+            "com.example.Foo",
+            Language::Java,
+            "src/main/java/com/example/App.java",
+            &all_files,
+        );
+        assert_eq!(
+            result,
+            Some("src/main/java/com/example/Foo.java".to_string())
+        );
+    }
+
+    #[test]
+    fn ts_d_ts_resolves() {
+        let all_files = vec!["src/types.d.ts".to_string()];
+        let result = resolve_import("./types", Language::TypeScript, "src/main.ts", &all_files);
+        assert_eq!(result, Some("src/types.d.ts".to_string()));
     }
 
     #[test]

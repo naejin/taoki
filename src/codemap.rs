@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
 use crate::index::{self, Language};
@@ -137,7 +138,6 @@ fn load_cache(root: &Path) -> Cache {
 }
 
 fn save_cache(root: &Path, cache: &Cache) {
-    use fs2::FileExt;
     let path = cache_path(root);
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
