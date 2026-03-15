@@ -1,7 +1,4 @@
-mod codemap;
-mod deps;
-mod index;
-mod mcp;
+use taoki::mcp;
 
 use std::io::{self, BufRead, Write};
 
