@@ -156,6 +156,7 @@ pub(crate) fn fn_signature(node: Node, source: &[u8]) -> Option<String> {
 pub(crate) enum Section {
     Import,
     Constant,
+    Expression,
     Type,
     Trait,
     Impl,
@@ -170,6 +171,7 @@ impl Section {
         match self {
             Self::Import => "imports:",
             Self::Constant => "consts:",
+            Self::Expression => "exprs:",
             Self::Type => "types:",
             Self::Trait => "traits:",
             Self::Impl => "impls:",
