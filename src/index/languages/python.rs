@@ -157,8 +157,33 @@ impl LanguageExtractor for PythonExtractor {
         entry.into_iter().collect()
     }
 
-    fn is_test_node(&self, _node: Node, _source: &[u8], _attrs: &[Node]) -> bool {
-        false
+    fn is_test_node(&self, node: Node, source: &[u8], _attrs: &[Node]) -> bool {
+        match node.kind() {
+            "function_definition" => {
+                node.child_by_field_name("name")
+                    .map(|n| node_text(n, source).starts_with("test_"))
+                    .unwrap_or(false)
+            }
+            "decorated_definition" => {
+                if let Some(inner) = find_child(node, "function_definition") {
+                    return inner.child_by_field_name("name")
+                        .map(|n| node_text(n, source).starts_with("test_"))
+                        .unwrap_or(false);
+                }
+                if let Some(inner) = find_child(node, "class_definition") {
+                    return inner.child_by_field_name("name")
+                        .map(|n| node_text(n, source).starts_with("Test"))
+                        .unwrap_or(false);
+                }
+                false
+            }
+            "class_definition" => {
+                node.child_by_field_name("name")
+                    .map(|n| node_text(n, source).starts_with("Test"))
+                    .unwrap_or(false)
+            }
+            _ => false,
+        }
     }
 
     fn is_doc_comment(&self, _node: Node, _source: &[u8]) -> bool {
@@ -234,5 +259,34 @@ impl LanguageExtractor for PythonExtractor {
             }
         }
         PublicApi { types, functions }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::index::{Language, index_source};
+
+    #[test]
+    fn python_test_functions_collapsed() {
+        let src = "\
+def helper():
+    pass
+
+def test_login():
+    assert True
+
+class TestAuth:
+    def test_token(self):
+        pass
+
+def process():
+    pass
+";
+        let out = index_source(src.as_bytes(), Language::Python).unwrap();
+        assert!(out.contains("tests:"), "missing tests section in:\n{out}");
+        assert!(!out.contains("test_login"), "test_login should be collapsed in:\n{out}");
+        assert!(!out.contains("TestAuth"), "TestAuth should be collapsed in:\n{out}");
+        assert!(out.contains("helper"), "helper should be visible in:\n{out}");
+        assert!(out.contains("process"), "process should be visible in:\n{out}");
     }
 }
