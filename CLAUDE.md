@@ -17,7 +17,7 @@ There are no integration tests or test fixtures — tests use `tempfile` crate t
 
 Four modules under `src/`:
 
-- **`main.rs`** — MCP stdio transport. Auto-detects framing (Content-Length headers vs bare JSONL). Reads requests, dispatches to `mcp::handle_request`, writes responses.
+- **`main.rs`** — MCP stdio transport. Auto-detects framing (Content-Length headers vs bare JSONL). Reads requests, dispatches to `mcp::handle_request`, writes responses. Supports `--version` flag (prints version from `Cargo.toml` and exits before MCP loop).
 - **`mcp.rs`** — JSON-RPC dispatch. Routes `initialize`, `ping`, `tools/list`, `tools/call`. Tool calls dispatch to `call_index`, `call_code_map`, and `call_dependencies`. Also handles filename-based test file detection (collapses entire test files in `index` output).
 - **`codemap.rs`** — `build_code_map()` walks a repo (respecting .gitignore), hashes files with blake3, caches results in `.cache/taoki/code-map.json` with file-level locking (fs2). Calls `index::extract_public_api` for each file. Computes heuristic tags per file (`[entry-point]`, `[tests]`, `[error-types]`, `[module-root]`, etc.). Also triggers dependency graph building via `deps.rs`.
 - **`deps.rs`** — Cross-file dependency graph. Extracts imports from source files using tree-sitter, resolves them to actual files in the repo (best-effort, language-specific), and builds a cached graph. Provides `query_deps()` to show depends_on/used_by/external for any file. Cache stored at `.cache/taoki/deps.json`.
@@ -44,6 +44,16 @@ Rust (.rs), Python (.py, .pyi), TypeScript (.ts, .tsx), JavaScript (.js, .jsx, .
 4. Register the extractor in `Language::extractor()`.
 5. Add a test in `src/index/mod.rs` (see existing `*_all_sections` tests).
 
+## Distribution
+
+Taoki is distributed via pre-built binaries on GitHub Releases and install scripts. No Rust toolchain required for end users.
+
+- **Install scripts:** `scripts/install.sh` (Linux/macOS) and `scripts/install.ps1` (Windows). Both download the correct binary from GitHub Releases, verify SHA256 checksums, do an atomic swap install to `~/.claude/plugins/taoki/`, and register the plugin with Claude Code.
+- **MCP entry points:** `scripts/run.sh` (Unix) and `scripts/run.cmd` (Windows). These have 3-way fallback: exec binary if present, `cargo build` if `Cargo.toml` exists (source clone), otherwise error with install hint.
+- **Release pipeline:** `.github/workflows/release.yml` triggers on `v*` tags. Cross-compiles for 5 targets (linux x86_64/aarch64, macos x86_64/aarch64, windows x86_64) using `cross` for Linux ARM64. Packages binary + plugin files into tarballs/zips, generates `checksums.txt`, publishes a GitHub Release.
+- **Release artifacts include:** `.claude-plugin/`, `commands/`, `skills/`, `scripts/run.sh`, `scripts/run.cmd`, and the binary at `target/release/taoki`. Source code, docs, and install scripts are excluded.
+- **To publish a release:** `git tag v0.x.0 && git push origin v0.x.0`
+
 ## Warning
 
-There is one known compiler warning: `framing` initial assignment in `main.rs:96` is flagged as unused because it's overwritten on first message. This is intentional — it provides a default before the first read.
+There is one known compiler warning: `framing` initial assignment in `main.rs:101` is flagged as unused because it's overwritten on first message. This is intentional — it provides a default before the first read.
