@@ -23,28 +23,58 @@ All tools use [tree-sitter](https://tree-sitter.github.io/) for accurate, fast p
 
 ## Install
 
+### Quick install (no Rust required)
+
+**Linux / macOS:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.sh | bash
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.ps1 | iex
+```
+
+**Install a specific version:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.sh | bash -s -- v0.2.0
+```
+
+### Build from source
+
 Requires a Rust toolchain (install via [rustup](https://rustup.rs/) if needed).
 
 ```bash
-claude plugin add /path/to/taoki
-```
-
-Or if you've cloned it to a standard location:
-
-```bash
-claude plugin add ~/projects/taoki
+git clone https://github.com/naejin/taoki.git
+claude plugin add ./taoki
 ```
 
 The first time Claude uses the plugin, it automatically compiles the binary (`cargo build --release`). No manual build step needed.
 
 ## Update
 
-Pull the latest changes and the binary will be rebuilt automatically on next use:
+Re-run the install script — it downloads the latest release and replaces the previous install:
+
+**Linux / macOS:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.sh | bash
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.ps1 | iex
+```
+
+**From source:**
 
 ```bash
 cd /path/to/taoki
 git pull
-rm -f target/release/taoki  # forces rebuild on next invocation
 ```
 
 ## How It Works
