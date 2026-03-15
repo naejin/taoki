@@ -67,11 +67,13 @@ jobs:
           cp -r .claude-plugin staging/taoki/
           cp -r commands staging/taoki/
           cp -r skills staging/taoki/
+          cp -r hooks staging/taoki/
           mkdir -p staging/taoki/scripts
           cp scripts/run.sh staging/taoki/scripts/
           cp scripts/run.cmd staging/taoki/scripts/
           chmod +x staging/taoki/scripts/run.sh
           chmod +x staging/taoki/target/release/taoki
+          chmod +x staging/taoki/hooks/*.sh
           cd staging
           tar czf ../${{ matrix.artifact }}.${{ matrix.ext }} taoki
         shell: bash
@@ -84,6 +86,7 @@ jobs:
           cp -r .claude-plugin staging/taoki/
           cp -r commands staging/taoki/
           cp -r skills staging/taoki/
+          cp -r hooks staging/taoki/
           mkdir -p staging/taoki/scripts
           cp scripts/run.sh staging/taoki/scripts/
           cp scripts/run.cmd staging/taoki/scripts/
