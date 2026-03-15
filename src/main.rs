@@ -19,9 +19,11 @@ fn read_message<R: Read>(reader: &mut R) -> io::Result<Option<String>> {
     let mut content_len = None;
     for line in headers.split("\r\n") {
         let line = line.trim();
-        if let Some(rest) = line.strip_prefix("Content-Length:") {
-            content_len = rest.trim().parse::<usize>().ok();
-            break;
+        if let Some((key, value)) = line.split_once(':') {
+            if key.trim().eq_ignore_ascii_case("Content-Length") {
+                content_len = value.trim().parse::<usize>().ok();
+                break;
+            }
         }
     }
     let Some(len) = content_len else {

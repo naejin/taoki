@@ -9,6 +9,8 @@ use crate::index::{self, Language};
 pub enum CodeMapError {
     #[error("path does not exist: {0}")]
     PathNotFound(PathBuf),
+    #[error("invalid glob pattern: {0}")]
+    InvalidGlob(String),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -44,11 +46,10 @@ fn walk_files(root: &Path, globs: &[String]) -> Result<Vec<PathBuf>, CodeMapErro
     } else {
         let mut builder = GlobSetBuilder::new();
         for g in globs {
-            if let Ok(glob) = Glob::new(g) {
-                builder.add(glob);
-            }
+            let glob = Glob::new(g).map_err(|_| CodeMapError::InvalidGlob(g.clone()))?;
+            builder.add(glob);
         }
-        builder.build().ok()
+        Some(builder.build().map_err(|_| CodeMapError::InvalidGlob("globset".into()))?)
     };
 
     let mut files = Vec::new();
@@ -93,7 +94,24 @@ fn cache_path(root: &Path) -> PathBuf {
 
 fn load_cache(root: &Path) -> Cache {
     let path = cache_path(root);
-    match std::fs::read_to_string(&path) {
+    let lock_path = path.with_extension("lock");
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path);
+    let _lock_guard = if let Ok(f) = lock_file {
+        if f.lock_shared().is_ok() {
+            Some(f)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let result = match std::fs::read_to_string(&path) {
         Ok(data) => serde_json::from_str(&data).unwrap_or(Cache {
             version: CACHE_VERSION,
             files: HashMap::new(),
@@ -102,7 +120,11 @@ fn load_cache(root: &Path) -> Cache {
             version: CACHE_VERSION,
             files: HashMap::new(),
         },
+    };
+    if let Some(f) = _lock_guard {
+        let _ = f.unlock();
     }
+    result
 }
 
 fn save_cache(root: &Path, cache: &Cache) {

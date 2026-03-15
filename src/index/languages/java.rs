@@ -274,15 +274,18 @@ impl LanguageExtractor for JavaExtractor {
                         {
                             types.push(name.to_string());
                         }
-                        // Also collect public methods
                         if let Some(body) = child.child_by_field_name("body") {
                             let mut bc = body.walk();
                             for member in body.children(&mut bc) {
                                 if member.kind() == "method_declaration" {
-                                    let mmods = self.modifiers_text(member, source);
-                                    if mmods.contains("public") {
-                                        let sig = self.method_signature(member, source);
+                                    let sig = self.method_signature(member, source);
+                                    if child.kind() == "interface_declaration" {
                                         functions.push(sig);
+                                    } else {
+                                        let mmods = self.modifiers_text(member, source);
+                                        if mmods.contains("public") {
+                                            functions.push(sig);
+                                        }
                                     }
                                 }
                             }
