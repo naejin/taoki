@@ -43,6 +43,10 @@ irm https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.ps1 | 
 curl -fsSL https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.sh | bash -s -- v0.2.0
 ```
 
+```powershell
+$env:TAOKI_VERSION="v0.2.0"; irm https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.ps1 | iex
+```
+
 ### Build from source
 
 Requires a Rust toolchain (install via [rustup](https://rustup.rs/) if needed).

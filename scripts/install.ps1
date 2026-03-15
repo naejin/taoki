@@ -28,8 +28,14 @@ if (-not $Version) {
         $release = Invoke-RestMethod -Uri $ApiUrl -Headers $headers
         $Version = $release.tag_name
     } catch {
-        Write-Err "Failed to fetch latest release. $_"
-        Write-Err "If rate-limited, set GITHUB_TOKEN or TAOKI_VERSION env var."
+        $statusCode = $_.Exception.Response.StatusCode.value__
+        if ($statusCode -eq 403) {
+            Write-Err "GitHub API rate limit exceeded."
+            Write-Err "Set GITHUB_TOKEN or TAOKI_VERSION env var to continue."
+        } else {
+            Write-Err "Failed to fetch latest release (HTTP $statusCode). $_"
+            Write-Err "If rate-limited, set GITHUB_TOKEN or TAOKI_VERSION env var."
+        }
         exit 1
     }
 }
@@ -88,8 +94,14 @@ try {
 
     # Verify binary
     $Binary = Join-Path $InstallDir "target\release\taoki.exe"
-    $VersionOutput = & $Binary --version 2>&1
-    Write-Info "Installed $VersionOutput"
+    try {
+        $VersionOutput = & $Binary --version 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "Binary exited with code $LASTEXITCODE" }
+        Write-Info "Installed $VersionOutput"
+    } catch {
+        Write-Err "Binary verification failed. The download may be corrupted."
+        exit 1
+    }
 
     # Register plugin
     $ClaudePath = Get-Command claude -ErrorAction SilentlyContinue
