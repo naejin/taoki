@@ -96,6 +96,51 @@ impl PythonExtractor {
         ))
     }
 
+    const NOISY_RECEIVERS: &'static [&'static str] = &[
+        "console", "process", "logging", "log", "logger", "Math", "Object", "Array", "JSON",
+    ];
+
+    fn extract_expression_assignment(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
+        let left = node.child(0)?;
+        let name = node_text(left, source);
+        // ALL_CAPS are handled by extract_assignment as constants
+        if name.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
+            return None;
+        }
+        let text = truncate(node_text(node, source).trim(), 80);
+        let parent = node.parent()?;
+        Some(SkeletonEntry::new(Section::Expression, parent, text.to_string()))
+    }
+
+    fn extract_dotted_call(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
+        // node is a "call" node inside an "expression_statement"
+        let func = node.child_by_field_name("function")?;
+        if func.kind() != "attribute" {
+            return None; // Not a dotted call — skip bare calls like print(), run()
+        }
+        let receiver = func.child_by_field_name("object").map(|n| node_text(n, source)).unwrap_or("");
+        if Self::NOISY_RECEIVERS.contains(&receiver) {
+            return None;
+        }
+        let text = truncate(node_text(node, source).trim(), 80);
+        let parent = node.parent()?;
+        Some(SkeletonEntry::new(Section::Expression, parent, text.to_string()))
+    }
+
+    fn extract_if_name_main(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
+        let condition = node.child_by_field_name("condition")?;
+        let cond_text = node_text(condition, source);
+        if cond_text.contains("__name__") && cond_text.contains("__main__") {
+            Some(SkeletonEntry::new(
+                Section::Expression,
+                node,
+                format!("if __name__ == \"__main__\""),
+            ))
+        } else {
+            None
+        }
+    }
+
     fn extract_assignment(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
         let left = node.child(0)?;
         let name = node_text(left, source);
@@ -148,10 +193,21 @@ impl LanguageExtractor for PythonExtractor {
                     None => None,
                 }
             }
-            "expression_statement" => node
-                .child(0)
-                .filter(|c| c.kind() == "assignment")
-                .and_then(|c| self.extract_assignment(c, source)),
+            "expression_statement" => {
+                if let Some(child) = node.child(0) {
+                    match child.kind() {
+                        "assignment" => {
+                            self.extract_assignment(child, source)
+                                .or_else(|| self.extract_expression_assignment(child, source))
+                        }
+                        "call" => self.extract_dotted_call(child, source),
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            }
+            "if_statement" => self.extract_if_name_main(node, source),
             _ => None,
         };
         entry.into_iter().collect()
@@ -288,5 +344,51 @@ def process():
         assert!(!out.contains("TestAuth"), "TestAuth should be collapsed in:\n{out}");
         assert!(out.contains("helper"), "helper should be visible in:\n{out}");
         assert!(out.contains("process"), "process should be visible in:\n{out}");
+    }
+
+    #[test]
+    fn python_top_level_expressions() {
+        let src = "\
+from flask import Flask
+
+app = Flask(__name__)
+__version__ = '1.0'
+db = SQLAlchemy()
+
+app.register_blueprint(auth_bp)
+db.init_app(app)
+
+MAX_SIZE = 100
+
+print('hello')
+run()
+logging.info('started')
+
+if __name__ == '__main__':
+    app.run(debug=True)
+";
+        let out = index_source(src.as_bytes(), Language::Python).unwrap();
+
+        // Named assignments (non-ALL_CAPS) should appear in exprs:
+        assert!(out.contains("exprs:"), "missing exprs section in:\n{out}");
+        assert!(out.contains("app = Flask(__name__)"), "missing app assignment in:\n{out}");
+        assert!(out.contains("__version__"), "missing __version__ in:\n{out}");
+        assert!(out.contains("db = SQLAlchemy()"), "missing db assignment in:\n{out}");
+
+        // Dotted method calls should appear in exprs:
+        assert!(out.contains("app.register_blueprint"), "missing register_blueprint in:\n{out}");
+        assert!(out.contains("db.init_app"), "missing db.init_app in:\n{out}");
+
+        // ALL_CAPS should still be in consts:
+        assert!(out.contains("consts:"), "missing consts section in:\n{out}");
+        assert!(out.contains("MAX_SIZE"), "missing MAX_SIZE in:\n{out}");
+
+        // Noise should NOT appear
+        assert!(!out.contains("print('hello')"), "print() should be filtered in:\n{out}");
+        assert!(!out.contains("  run()"), "run() should be filtered in:\n{out}");
+        assert!(!out.contains("logging.info"), "logging.info should be filtered in:\n{out}");
+
+        // if __name__ == '__main__' should be collapsed with line range
+        assert!(out.contains("if __name__"), "missing if __name__ block in:\n{out}");
     }
 }
