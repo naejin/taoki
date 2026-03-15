@@ -110,9 +110,14 @@ pub fn tool_definitions() -> Value {
 }
 
 pub fn handle_request(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
+    // Notifications (no id) must never receive a response per JSON-RPC spec
+    if req.id.is_none() {
+        return None;
+    }
+
     match req.method.as_str() {
         "initialize" => Some(handle_initialize(req)),
-        "notifications/initialized" => None,
+        "ping" => Some(JsonRpcResponse::success(req.id.clone(), serde_json::json!({}))),
         "tools/list" => Some(handle_tools_list(req)),
         "tools/call" => Some(handle_tools_call(req)),
         _ => Some(JsonRpcResponse::error(
