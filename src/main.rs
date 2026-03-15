@@ -87,6 +87,11 @@ fn write_message(writer: &mut impl Write, msg: &str, framing: Framing) -> io::Re
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 && args[1] == "--version" {
+        println!("taoki {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     eprintln!("taoki: MCP server starting");
 
     let stdin = io::stdin().lock();
