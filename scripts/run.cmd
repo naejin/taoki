@@ -1,4 +1,5 @@
 @echo off
+setlocal
 set "DIR=%~dp0.."
 set "BIN=%DIR%\target\release\taoki.exe"
 if exist "%BIN%" (
@@ -7,7 +8,7 @@ if exist "%BIN%" (
 )
 where cargo >nul 2>&1
 if %errorlevel% equ 0 (
-    cargo build --release --manifest-path "%DIR%\Cargo.toml" 2>&1
+    cargo build --release --manifest-path "%DIR%\Cargo.toml" 1>&2
     "%BIN%" %*
     exit /b %errorlevel%
 )

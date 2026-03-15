@@ -8,9 +8,12 @@ function Write-Err($msg) { Write-Host "error: $msg" -ForegroundColor Red }
 
 # Detect architecture
 $Arch = $env:PROCESSOR_ARCHITECTURE
-if ($Arch -ne "AMD64") {
-    Write-Err "Unsupported architecture: $Arch"
+if ($Arch -ne "AMD64" -and $Arch -ne "ARM64") {
+    Write-Err "Unsupported architecture: $Arch. Only x86_64 and ARM64 (via emulation) are supported."
     exit 1
+}
+if ($Arch -eq "ARM64") {
+    Write-Info "ARM64 detected. Installing x86_64 binary (runs via emulation)."
 }
 
 $Artifact = "taoki-windows-x86_64.zip"
@@ -83,13 +86,13 @@ try {
         New-Item -ItemType Directory -Path $ParentDir -Force | Out-Null
     }
     if (Test-Path $InstallDir) {
-        $BackupDir = "$InstallDir.bak"
-        if (Test-Path $BackupDir) { Remove-Item -Recurse -Force $BackupDir }
-        Rename-Item -Path $InstallDir -NewName "taoki.bak"
+        $BackupPath = "${InstallDir}.bak"
+        if (Test-Path $BackupPath) { Remove-Item -Recurse -Force $BackupPath }
+        Move-Item -Path $InstallDir -Destination $BackupPath
     }
     Move-Item -Path (Join-Path $StagingDir "taoki") -Destination $InstallDir
-    if (Test-Path "$($ParentDir)\taoki.bak") {
-        Remove-Item -Recurse -Force "$($ParentDir)\taoki.bak"
+    if (Test-Path "${InstallDir}.bak") {
+        Remove-Item -Recurse -Force "${InstallDir}.bak"
     }
 
     # Verify binary
