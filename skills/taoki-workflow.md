@@ -1,6 +1,6 @@
 ---
 name: taoki-workflow
-description: "Use when starting ANY coding task in a project. Triggers on: implementing features, fixing bugs, refactoring, understanding code, exploring a repo, finding files to modify, planning changes, investigating issues. Use BEFORE Glob, Grep, Read, or Edit."
+description: "Use BEFORE reading source files. Call code_map for repo overview, index for file structure with line numbers, dependencies for impact analysis. Saves 70-90% tokens vs reading full files."
 allowed-tools: mcp__taoki__code_map, mcp__taoki__index, mcp__taoki__dependencies
 ---
 
