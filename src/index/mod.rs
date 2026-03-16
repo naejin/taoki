@@ -932,4 +932,30 @@ function undocumented() {}
         ]);
         lacks(&out, &["/// undocumented", "Loaded from"]);
     }
+
+    #[test]
+    fn go_doc_comment_extracted() {
+        let src = "\
+package main
+
+// FetchUser retrieves a user by ID.
+func FetchUser(id string) (*User, error) { return nil, nil }
+
+// Config holds application settings.
+type Config struct {
+    Host string
+    Port int
+}
+
+// not adjacent — blank line separates
+
+func Bare() {}
+";
+        let out = idx(src, Language::Go);
+        has(&out, &[
+            "/// FetchUser retrieves a user by ID.",
+            "/// Config holds application settings.",
+        ]);
+        lacks(&out, &["/// not adjacent", "/// Bare"]);
+    }
 }
