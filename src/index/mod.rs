@@ -913,6 +913,17 @@ pub struct Thing {}
     }
 
     #[test]
+    fn rust_block_doc_comment_ignored() {
+        // Rust /** */ block doc comments are intentionally not extracted.
+        // They are extremely rare in practice (/// is the overwhelming convention)
+        // and is_doc_comment only matches line_comment nodes, not block_comment.
+        let src = "/** Block doc. */\npub fn block_doc() {}\n";
+        let out = idx(src, Language::Rust);
+        has(&out, &["pub block_doc()"]);
+        lacks(&out, &["/// Block doc"]);
+    }
+
+    #[test]
     fn ts_doc_comment_extracted() {
         let src = "\
 /** Handles incoming requests. */
@@ -987,6 +998,24 @@ public class Bare {}
             "/// Represents a user in the system.",
         ]);
         lacks(&out, &["/// Bare", "Contains identity"]);
+    }
+
+    #[test]
+    fn python_raw_and_single_quote_docstrings() {
+        let src = r#"
+def raw_doc():
+    r"""Raw docstring content."""
+    pass
+
+def single_quote_doc():
+    '''Single-quoted docstring.'''
+    pass
+"#;
+        let out = idx(src, Language::Python);
+        has(&out, &[
+            "/// Raw docstring content.",
+            "/// Single-quoted docstring.",
+        ]);
     }
 
     #[test]

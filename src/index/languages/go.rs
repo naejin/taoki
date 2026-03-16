@@ -250,6 +250,10 @@ impl LanguageExtractor for GoExtractor {
         Some(trimmed.to_string())
     }
 
+    /// Go uniquely needs an adjacency check because is_doc_comment matches ALL
+    /// comment nodes (both // and /* */). Other languages (Rust, TS/JS, Java) only
+    /// match doc-specific syntax (///, /**) so stray comments can't leak through.
+    /// In Go, a blank line between a comment and a declaration means it's not a doc comment.
     fn extract_doc_line(&self, node: Node, source: &[u8]) -> Option<String> {
         let item_start_row = node.start_position().row;
         let mut doc_nodes = Vec::new();
