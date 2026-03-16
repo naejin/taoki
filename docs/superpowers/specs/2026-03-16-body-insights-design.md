@@ -35,6 +35,17 @@ pub(crate) struct MatchInsight {
 }
 ```
 
+### `BodyInsights` shared formatting
+
+`BodyInsights` provides a `format_lines() -> Vec<String>` method that produces the `→`-prefixed strings. This single method is used by both rendering paths (top-level entries and method children), ensuring consistent formatting:
+
+```rust
+impl BodyInsights {
+    pub(crate) fn format_lines(&self) -> Vec<String> { ... }
+    pub(crate) fn is_empty(&self) -> bool { ... }
+}
+```
+
 ### SkeletonEntry changes
 
 Add one field:
@@ -47,6 +58,13 @@ pub(crate) struct SkeletonEntry {
 ```
 
 `BodyInsights` defaults to empty vecs. `SkeletonEntry::new()` initializes it empty.
+
+### Two rendering paths (unified formatting)
+
+- **Top-level functions** (`Section::Function`): `format_skeleton()` renders `entry.insights` by calling `insights.format_lines()` and writing each line at 4-space indent after the entry's children.
+- **Methods inside impl/trait/class blocks**: Language extractors call `analyze_body()` per method, then call `insights.format_lines()` and append the resulting strings (with 2-space prefix for extra indent) to the `children: Vec<String>`. This keeps the method representation as `Vec<String>` without requiring a type change.
+
+Both paths use the same `BodyInsights::format_lines()` method, so output is always consistent.
 
 ## Output Format
 
@@ -92,11 +110,11 @@ Contains:
 
 ### Integration points
 
-1. **`build_skeleton()` in `index/mod.rs`**: After `extract_nodes()` returns entries, for each entry with section `Function`, call `analyze_body()` on the original AST node's body and populate `entry.insights`.
+1. **`build_skeleton()` in `index/mod.rs`**: Inside the existing loop over `root.children()`, after calling `extractor.extract_nodes(child, source, &attrs)` and getting entries, for each entry where `entry.section == Section::Function`, call `analyze_body(child, source, lang)` on the current `child` Node (which is still in scope) and set `entry.insights`. This requires adding a `lang: Language` parameter to `build_skeleton()` — all call sites (`index_source`, `extract_all`) already have the `Language` available.
 
-2. **Language extractors' `extract_methods()`**: After building each method's signature string, call `analyze_body()` on the method node's body. Format insights as additional child strings with `→` prefix and extra indentation.
+2. **Language extractors' `extract_methods()`**: After building each method's signature string, call `analyze_body()` on the method AST node's body. Call `insights.format_lines()` and append the resulting strings (with 2-space prefix) to the children vec.
 
-3. **`format_skeleton()`**: After rendering each entry's children, render non-empty insight fields from `entry.insights` with `→` prefix at 4-space indent.
+3. **`format_skeleton()`**: After rendering each entry's children, if `entry.insights` is non-empty, call `entry.insights.format_lines()` and write each line at 4-space indent.
 
 ### Call graph extraction
 
@@ -122,11 +140,11 @@ Find match/switch nodes in function bodies. For each, extract:
 
 | Language | Match node kind | Target field | Arm node kind | Pattern field |
 |----------|----------------|--------------|---------------|---------------|
-| Rust | `match_expression` | `value` field (scrutinee) | `match_arm` → `pattern` field | `pattern` field text |
-| Python | `match_statement` | `subject` field | `case_clause` | First named child (pattern) |
+| Rust | `match_expression` | `value` field (scrutinee) | `match_arm` | First named children before `=>` (fallback: iterate named children if `pattern` field unavailable — verify against tree-sitter-rust 0.23 grammar at implementation time) |
+| Python | `match_statement` | `subject` field | `case_clause` | First named child (pattern). Note: `match_statement` requires tree-sitter-python 0.23+ (PEP 634 support added ~0.21). Gracefully produce no results if grammar lacks support. |
 | TypeScript/JS | `switch_statement` | `value` field | `switch_case` in `switch_body` | `value` field (or "default") |
 | Go | `expression_switch_statement` | `value` field | `expression_case` | `value` field text; also `type_switch_statement` → `type_case` |
-| Java | `switch_expression` / `switch_statement` | `condition` field (in parenthesized expression) | `switch_block_statement_group` → `switch_label` | label value text |
+| Java | `switch_expression` / `switch_statement` | `condition` field → unwrap inner `parenthesized_expression` to get meaningful target text | `switch_block_statement_group` → `switch_label` | label value text |
 
 **Truncation**: If more than 10 arms, show first 10 and append `...`.
 
@@ -137,7 +155,8 @@ Find error construction/signaling sites in function bodies.
 | Language | Pattern | Extraction |
 |----------|---------|------------|
 | Rust | `call_expression` where callee is `Err` | Inner expression text (e.g., `CodeMapError::PathNotFound`) |
-| Rust | `macro_invocation` where macro is `bail!`, `anyhow!` | Macro name |
+| Rust | `macro_invocation` where macro is `bail!`, `anyhow!`, `panic!`, `todo!`, `unimplemented!` | Macro name |
+| Rust | `try_expression` (`?` operator) | Count of `?` usages, shown as "N error propagations via ?" rather than listing each |
 | Python | `raise_statement` | First child (exception expression), extract type name only |
 | TypeScript/JS | `throw_statement` | Child expression; if `new_expression`, extract the constructor name |
 | Go | `call_expression` where callee is `errors.New` or `fmt.Errorf` in a return statement | "errors.New" / "fmt.Errorf" + first string arg if short |
@@ -186,6 +205,13 @@ Each language represents function bodies differently:
 
 The `analyze_body()` function first extracts the body node via `child_by_field_name("body")`, then runs the three extractors on it.
 
+## Edge cases
+
+- **Arrow function expression bodies (TS/JS)**: Concise arrow functions like `x => x + 1` have an expression body, not a block. `walk_body()` handles both — when the body is a single expression, it is still walked for calls.
+- **Async/await patterns (TS/JS)**: `await fetch(...)` wraps a `call_expression` in an `await_expression`. The recursive walker naturally finds the inner `call_expression`, so async patterns work without special handling.
+- **Double-counting in nested calls**: `foo(bar(x))` has two `call_expression` nodes, one nested inside the other's arguments. The walker visits both, which is correct — both `foo` and `bar` are extracted. Deduplication prevents repeated entries.
+- **Codemap inline skeletons**: `build_code_map()`'s `detail_files` parameter includes inline skeletons via `extract_all()`. These will automatically include body insights as a consequence of the skeleton format change. No changes to `codemap.rs` are needed.
+
 ## Scope and constraints
 
 - Only analyzes function/method bodies. Does not analyze top-level expressions, const initializers, or field defaults.
@@ -203,7 +229,7 @@ The `analyze_body()` function first extracts the body node via `child_by_field_n
 | `src/index/languages/rust.rs` | **Modify**: In `extract_methods()`, call `analyze_body()` for each method and append insight strings to children. |
 | `src/index/languages/python.rs` | **Modify**: In `extract_class()` method extraction loop, call `analyze_body()` and append insight strings. |
 | `src/index/languages/typescript.rs` | **Modify**: In `extract_class()` method extraction loop, call `analyze_body()` and append insight strings. |
-| `src/index/languages/go.rs` | **Modify**: In `extract_methods()` (for interface/struct), call `analyze_body()` and append insight strings. Go methods are top-level `method_declaration`, so they get insights through `build_skeleton()` directly. |
+| `src/index/languages/go.rs` | **No changes needed**. Go methods are top-level `method_declaration` nodes, so they get insights through `build_skeleton()` directly. Interface methods have no bodies. |
 | `src/index/languages/java.rs` | **Modify**: In class body method extraction, call `analyze_body()` and append insight strings. |
 
 ## Testing strategy
