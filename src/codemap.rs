@@ -883,4 +883,128 @@ mod tests {
         let result = build_code_map(dir.path(), &[], &[]).unwrap();
         assert!(result.contains("[enriched] Library root module."));
     }
+
+    #[test]
+    fn code_map_without_files_has_no_skeleton() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("lib.rs"), "pub fn hello() {}\n").unwrap();
+        let result = build_code_map(dir.path(), &[], &[]).unwrap();
+        assert!(!result.contains("[skeleton]"), "should have no skeleton without files param:\n{result}");
+    }
+
+    #[test]
+    fn code_map_files_ignores_nonexistent() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("lib.rs"), "pub fn hello() {}\n").unwrap();
+        let result = build_code_map(dir.path(), &[], &["nonexistent.rs".to_string()]).unwrap();
+        assert!(!result.contains("[skeleton]"), "should have no skeleton for nonexistent file:\n{result}");
+    }
+
+    #[test]
+    fn code_map_skeleton_lines_indented() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("lib.rs"), "pub fn hello() {}\n").unwrap();
+        let result = build_code_map(dir.path(), &[], &["lib.rs".to_string()]).unwrap();
+        let in_skeleton = result.lines()
+            .skip_while(|l| !l.contains("[skeleton]"))
+            .skip(1)
+            .take_while(|l| !l.is_empty() && !l.starts_with("- "))
+            .collect::<Vec<_>>();
+        assert!(!in_skeleton.is_empty(), "should have skeleton lines");
+        for line in &in_skeleton {
+            assert!(line.starts_with("  "), "skeleton line should be indented: {line:?}");
+        }
+    }
+
+    #[test]
+    fn code_map_test_file_skeleton_collapsed() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("test_auth.py"), "def test_login():\n    assert True\n\ndef test_logout():\n    pass\n").unwrap();
+        let result = build_code_map(dir.path(), &[], &["test_auth.py".to_string()]).unwrap();
+        assert!(result.contains("[skeleton]"), "test file should still get skeleton block");
+        assert!(result.contains("tests:"), "skeleton should be collapsed tests:");
+        // Individual test names should not appear in the skeleton block itself
+        let skeleton_block: String = result.lines()
+            .skip_while(|l| !l.contains("[skeleton]"))
+            .skip(1)
+            .take_while(|l| !l.is_empty() && !l.starts_with("- "))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!skeleton_block.contains("test_login"), "individual test names should not appear in skeleton");
+    }
+
+    #[test]
+    fn cache_v2_triggers_rebuild() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("lib.rs"), "pub fn hello() {}\n").unwrap();
+        let cache_dir = dir.path().join(".cache/taoki");
+        fs::create_dir_all(&cache_dir).unwrap();
+        let old_cache = serde_json::json!({
+            "version": 2,
+            "files": {
+                "lib.rs": {
+                    "hash": "oldhash",
+                    "lines": 1,
+                    "public_types": [],
+                    "public_functions": ["hello()"],
+                    "tags": []
+                }
+            }
+        });
+        fs::write(cache_dir.join("code-map.json"), serde_json::to_string(&old_cache).unwrap()).unwrap();
+        let result = build_code_map(dir.path(), &[], &["lib.rs".to_string()]).unwrap();
+        assert!(result.contains("[skeleton]"), "should rebuild cache and produce skeleton:\n{result}");
+        let cache_data: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(cache_dir.join("code-map.json")).unwrap()).unwrap();
+        assert_eq!(cache_data["version"], 3);
+    }
+
+    #[test]
+    fn cached_skeleton_matches_index_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = "pub struct Foo {}\npub fn bar() {}\nfn private() {}\n";
+        fs::write(dir.path().join("lib.rs"), source).unwrap();
+        build_code_map(dir.path(), &[], &[]).unwrap();
+        let result = build_code_map(dir.path(), &[], &["lib.rs".to_string()]).unwrap();
+        let skeleton_start = result.find("[skeleton]").unwrap();
+        let skeleton_block: String = result[skeleton_start + "[skeleton]\n".len()..]
+            .lines()
+            .take_while(|l| !l.starts_with("- "))
+            .map(|l| l.strip_prefix("  ").unwrap_or(l))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let fresh = crate::index::index_source(source.as_bytes(), crate::index::Language::Rust).unwrap();
+        assert_eq!(skeleton_block.trim(), fresh.trim(),
+            "cached skeleton should match fresh index_source output");
+    }
+
+    #[test]
+    fn code_map_parse_error_no_skeleton() {
+        let dir = tempfile::tempdir().unwrap();
+        // Tree-sitter is error-tolerant, so broken syntax still parses but
+        // produces no public API and an empty/minimal skeleton — verify no
+        // skeleton block appears in the output for such files.
+        fs::write(dir.path().join("broken.rs"), "this is not valid rust {{{{").unwrap();
+        let result = build_code_map(dir.path(), &[], &["broken.rs".to_string()]).unwrap();
+        assert!(result.contains("broken.rs"), "should list the file");
+        assert!(!result.contains("[skeleton]"), "should have no skeleton for broken code:\n{result}");
+    }
+
+    #[test]
+    fn code_map_files_respects_globs_filter() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src");
+        let lib_dir = dir.path().join("lib");
+        fs::create_dir(&src_dir).unwrap();
+        fs::create_dir(&lib_dir).unwrap();
+        fs::write(src_dir.join("main.rs"), "pub fn main() {}\n").unwrap();
+        fs::write(lib_dir.join("helper.rs"), "pub fn help() {}\n").unwrap();
+        let result = build_code_map(
+            dir.path(),
+            &["src/**/*.rs".to_string()],
+            &["lib/helper.rs".to_string()],
+        ).unwrap();
+        assert!(!result.contains("helper.rs"), "helper.rs filtered by glob should not appear:\n{result}");
+        assert!(!result.contains("[skeleton]"), "no skeleton for glob-filtered file:\n{result}");
+    }
 }
