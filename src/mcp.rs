@@ -82,7 +82,7 @@ pub fn tool_definitions() -> Value {
         "tools": [
             {
                 "name": "index",
-                "description": "Return a compact structural skeleton of a source file: imports, type definitions, function signatures, and their line numbers. ~70-90% fewer tokens than reading the full file. Use this to understand a file's architecture before reading specific sections with the Read tool. Supports: Rust, Python, TypeScript, JavaScript, Go, Java.",
+                "description": "Return a compact structural skeleton of a source file: imports, type definitions, function signatures, and their line numbers. ~70-90% fewer tokens than reading the full file. Use this to understand a file's architecture before reading specific sections with the Read tool. For multiple files, prefer code_map with the files parameter instead. Supports: Rust, Python, TypeScript, JavaScript, Go, Java.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -96,7 +96,7 @@ pub fn tool_definitions() -> Value {
             },
             {
                 "name": "code_map",
-                "description": "Build an incremental structural map of a codebase. Returns one line per file with public types and public function signatures. Use this FIRST when you need to understand a repository's structure or find which files are relevant to a task. Results are cached (blake3 hash) so repeated calls are near-instant. Supports glob patterns to narrow scope.",
+                "description": "Build an incremental structural map of a codebase. Returns one line per file with public types and public function signatures. Use this FIRST when you need to understand a repository's structure or find which files are relevant to a task. Pass `files` (array of relative paths) to include full structural skeletons inline for specific files — use this after identifying files of interest to avoid separate index calls. Results are cached (blake3 hash) so repeated calls are near-instant. Supports glob patterns to narrow scope.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -108,6 +108,11 @@ pub fn tool_definitions() -> Value {
                             "type": "array",
                             "items": { "type": "string" },
                             "description": "Optional glob patterns to filter files (e.g. [\"src/**/*.rs\"]). Defaults to all supported file types."
+                        },
+                        "files": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Optional list of relative file paths to include full structural skeletons for. Use after an initial code_map call to get detailed structure for files of interest."
                         }
                     },
                     "required": ["path"]
@@ -438,7 +443,17 @@ fn call_code_map(args: &Value) -> ToolResult {
         })
         .unwrap_or_default();
 
-    match codemap::build_code_map(std::path::Path::new(path), &globs, &[]) {
+    let detail_files: Vec<String> = args
+        .get("files")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    match codemap::build_code_map(std::path::Path::new(path), &globs, &detail_files) {
         Ok(map) => ToolResult {
             content: vec![ToolContent {
                 r#type: "text".to_string(),

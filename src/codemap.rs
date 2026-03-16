@@ -764,6 +764,77 @@ mod tests {
     }
 
     #[test]
+    fn code_map_with_files_includes_skeleton() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src");
+        fs::create_dir(&src_dir).unwrap();
+        fs::write(src_dir.join("lib.rs"), "pub struct Foo {}\npub fn bar() {}\n").unwrap();
+        fs::write(src_dir.join("main.rs"), "fn main() {}\n").unwrap();
+
+        let result = build_code_map(dir.path(), &[], &["src/lib.rs".to_string()]).unwrap();
+
+        // lib.rs should have skeleton
+        assert!(result.contains("[skeleton]"));
+        assert!(result.contains("Foo"));
+        assert!(result.contains("bar()"));
+
+        // main.rs should NOT have skeleton (not in files list)
+        let lines: Vec<&str> = result.lines().collect();
+        let main_idx = lines.iter().position(|l| l.contains("main.rs")).unwrap();
+        if main_idx + 1 < lines.len() {
+            assert!(!lines[main_idx + 1].contains("[skeleton]"),
+                "main.rs should not have skeleton");
+        }
+    }
+
+    #[test]
+    fn code_map_files_normalizes_dot_slash_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("lib.rs"), "pub fn hello() {}\n").unwrap();
+
+        let result = build_code_map(dir.path(), &[], &["./lib.rs".to_string()]).unwrap();
+        assert!(result.contains("[skeleton]"), "should match with ./ prefix:\n{result}");
+    }
+
+    #[test]
+    fn code_map_enriched_before_skeleton() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("lib.rs");
+        fs::write(&file, "pub fn hello() {}\n").unwrap();
+
+        // Initialize git repo
+        std::process::Command::new("git").args(["init"]).current_dir(dir.path()).output().unwrap();
+
+        // Get file hash
+        let source = fs::read(&file).unwrap();
+        let hash = blake3::hash(&source).to_hex().to_string();
+
+        // Write enrichment cache
+        let root_hash = blake3::hash(
+            dir.path().canonicalize().unwrap().to_string_lossy().as_bytes(),
+        ).to_hex().to_string();
+        let cache_dir = dir.path().join(".cache/taoki");
+        fs::create_dir_all(&cache_dir).unwrap();
+        let enrichment = serde_json::json!({
+            "version": 1,
+            "model": "haiku",
+            "repo_root_hash": root_hash,
+            "files": {
+                "lib.rs": {
+                    "hash": hash,
+                    "enrichment": "Test enrichment."
+                }
+            }
+        });
+        fs::write(cache_dir.join("enriched.json"), serde_json::to_string(&enrichment).unwrap()).unwrap();
+
+        let result = build_code_map(dir.path(), &[], &["lib.rs".to_string()]).unwrap();
+        let enriched_pos = result.find("[enriched]").expect("should have enrichment");
+        let skeleton_pos = result.find("[skeleton]").expect("should have skeleton");
+        assert!(enriched_pos < skeleton_pos, "enriched should appear before skeleton:\n{result}");
+    }
+
+    #[test]
     fn code_map_includes_enrichment() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("lib.rs");
