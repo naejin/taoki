@@ -38,6 +38,7 @@ types:
 
 fns:
   read_message(reader: &mut impl BufRead) -> ... [11-37]
+    /// Read a single JSON-RPC message from stdin.
     → calls: read_content_length_message, read_line, trim
     → match: framing → Framing::ContentLength, Framing::Jsonl
   main() [86-135]
@@ -65,6 +66,7 @@ external:
 - **Three tools** — `code_map` (repo overview), `index` (file skeleton), `dependencies` (import graph)
 - **70–90% fewer tokens** — Claude reads structure, not source, then targets specific line ranges
 - **Heuristic tags** — files auto-tagged as `[entry-point]`, `[tests]`, `[error-types]`, `[data-models]`, `[module-root]`, and more
+- **Docstring extraction** — first line of doc comments (`///`, `/** */`, Python docstrings) shown inline as `/// summary`
 - **Body insights** — functions show call graphs (`→ calls:`), match/switch arms (`→ match:`), and error sites (`→ errors:`)
 - **Test collapsing** — test code detected and collapsed across all supported languages
 - **Fast caching** — blake3 content hashing with file-level locking; repeated calls are near-instant
@@ -148,7 +150,7 @@ Once installed, Claude automatically has access to the three tools. Use them thr
 Taoki runs as an [MCP](https://modelcontextprotocol.io/) server over stdio. When Claude starts a session, it can call the three tools at any time:
 
 - **`code_map`** walks the repo (respecting `.gitignore`), hashes each file with [blake3](https://github.com/BLAKE3-team/BLAKE3), and extracts public API summaries using [tree-sitter](https://tree-sitter.github.io/). Results cached at `.cache/taoki/code-map.json`.
-- **`index`** parses a single file and returns its structural skeleton. Function and method bodies are analyzed to show call graphs, match/switch arms, and error return sites as `→` insight lines. Test code is automatically detected and collapsed — Python (`test_*`, `Test*`), Go (`Test*`, `Benchmark*`), TypeScript/JS (`describe`, `it`, `test`), Rust (`#[test]`, `#[cfg(test)]`). Files matching test naming patterns are collapsed entirely.
+- **`index`** parses a single file and returns its structural skeleton. The first line of doc comments is extracted and shown inline (`/// summary`), giving agents intent/contract information without reading source. Function and method bodies are analyzed to show call graphs, match/switch arms, and error return sites as `→` insight lines. Test code is automatically detected and collapsed — Python (`test_*`, `Test*`), Go (`Test*`, `Benchmark*`), TypeScript/JS (`describe`, `it`, `test`), Rust (`#[test]`, `#[cfg(test)]`). Files matching test naming patterns are collapsed entirely.
 - **`dependencies`** queries a cached dependency graph (`.cache/taoki/deps.json`) showing internal imports, reverse dependencies, and external packages.
 
 ## Caching
