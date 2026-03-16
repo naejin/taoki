@@ -958,4 +958,30 @@ func Bare() {}
         ]);
         lacks(&out, &["/// not adjacent", "/// Bare"]);
     }
+
+    #[test]
+    fn java_doc_comment_extracted() {
+        let src = "\
+package com.example;
+
+/** Handles user operations. */
+public class UserService {
+    public void doStuff() {}
+}
+
+/**
+ * Represents a user in the system.
+ * Contains identity and role information.
+ */
+public record User(String name, String role) {}
+
+public class Bare {}
+";
+        let out = idx(src, Language::Java);
+        has(&out, &[
+            "/// Handles user operations.",
+            "/// Represents a user in the system.",
+        ]);
+        lacks(&out, &["/// Bare", "Contains identity"]);
+    }
 }

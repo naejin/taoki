@@ -2,7 +2,7 @@ use tree_sitter::Node;
 
 use crate::index::{
     FIELD_TRUNCATE_THRESHOLD, LanguageExtractor, Section, SkeletonEntry, find_child, line_range,
-    node_text, prefixed, PublicApi,
+    node_text, prefixed, truncate, PublicApi,
 };
 use crate::index::body;
 
@@ -257,6 +257,47 @@ impl LanguageExtractor for JavaExtractor {
 
     fn is_doc_comment(&self, node: Node, source: &[u8]) -> bool {
         node.kind() == "block_comment" && node_text(node, source).starts_with("/**")
+    }
+
+    fn strip_doc_prefix(&self, text: &str) -> Option<String> {
+        let text = text.trim();
+        if let Some(inner) = text.strip_prefix("/**") {
+            if let Some(inner) = inner.strip_suffix("*/") {
+                let trimmed = inner.trim().trim_start_matches('*').trim();
+                if trimmed.is_empty() { return None; }
+                return Some(trimmed.to_string());
+            }
+            let after = inner.trim().trim_start_matches('*').trim();
+            if after.is_empty() { return None; }
+            return Some(after.to_string());
+        }
+        if let Some(inner) = text.strip_prefix('*') {
+            let trimmed = inner.trim();
+            if trimmed.is_empty() || trimmed == "/" { return None; }
+            return Some(trimmed.to_string());
+        }
+        None
+    }
+
+    fn extract_doc_line(&self, node: Node, source: &[u8]) -> Option<String> {
+        let mut prev = node.prev_sibling();
+        while let Some(p) = prev {
+            if self.is_doc_comment(p, source) {
+                let full = node_text(p, source);
+                for line in full.lines() {
+                    if let Some(stripped) = self.strip_doc_prefix(line) {
+                        return Some(truncate(&stripped, 120));
+                    }
+                }
+                return None;
+            }
+            if p.is_extra() {
+                prev = p.prev_sibling();
+                continue;
+            }
+            break;
+        }
+        None
     }
 
     fn is_module_doc(&self, _node: Node, _source: &[u8]) -> bool {
