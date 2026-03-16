@@ -85,6 +85,7 @@ pub fn should_skip_path(rel_path: &str) -> bool {
 
 struct FileResult {
     path: String,
+    hash: String,
     lines: usize,
     public_types: Vec<String>,
     public_functions: Vec<String>,
@@ -468,6 +469,7 @@ pub fn build_code_map(root: &Path, globs: &[String], detail_files: &[String]) ->
             if cached.hash == hash {
                 results.push(FileResult {
                     path: rel.clone(),
+                    hash: hash.clone(),
                     lines: cached.lines,
                     public_types: cached.public_types.clone(),
                     public_functions: cached.public_functions.clone(),
@@ -516,6 +518,7 @@ pub fn build_code_map(root: &Path, globs: &[String], detail_files: &[String]) ->
                 Err(_) => {
                     results.push(FileResult {
                         path: rel.clone(),
+                        hash: String::new(),
                         lines,
                         public_types: Vec::new(),
                         public_functions: Vec::new(),
@@ -532,7 +535,7 @@ pub fn build_code_map(root: &Path, globs: &[String], detail_files: &[String]) ->
         new_files.insert(
             rel.clone(),
             CacheEntry {
-                hash,
+                hash: hash.clone(),
                 lines,
                 public_types: public_types.clone(),
                 public_functions: public_functions.clone(),
@@ -543,6 +546,7 @@ pub fn build_code_map(root: &Path, globs: &[String], detail_files: &[String]) ->
 
         results.push(FileResult {
             path: rel,
+            hash,
             lines,
             public_types,
             public_functions,
@@ -591,13 +595,11 @@ pub fn build_code_map(root: &Path, globs: &[String], detail_files: &[String]) ->
             fr.path, fr.lines
         ));
         if let Some(enrich_entry) = enrichments.get(&fr.path) {
-            if let Some(cache_entry) = cache.files.get(&fr.path) {
-                if enrich_entry.hash == cache_entry.hash {
-                    out.push_str(&format!(
-                        "  [enriched] {}\n",
-                        enrich_entry.enrichment.replace('\n', " ")
-                    ));
-                }
+            if enrich_entry.hash == fr.hash {
+                out.push_str(&format!(
+                    "  [enriched] {}\n",
+                    enrich_entry.enrichment.replace('\n', " ")
+                ));
             }
         }
         if detail_set.contains(&fr.path) && !fr.skeleton.is_empty() {
@@ -1014,6 +1016,66 @@ mod tests {
         let result = build_code_map(dir.path(), &[], &["broken.rs".to_string()]).unwrap();
         assert!(result.contains("broken.rs"), "should list the file");
         assert!(!result.contains("[skeleton]"), "should have no skeleton for broken code:\n{result}");
+    }
+
+    #[test]
+    fn code_map_enrichment_uses_file_hash_not_cache_hash() {
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("lib.rs");
+        fs::write(&file, "pub struct Foo {}\n").unwrap();
+
+        // Compute the actual blake3 hash of the file
+        let actual_hash = hash_file(&file).unwrap();
+
+        // Compute repo root hash
+        let root_hash = blake3::hash(
+            dir.path()
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .as_bytes(),
+        )
+        .to_hex()
+        .to_string();
+
+        // Write a STALE code-map cache with a WRONG hash
+        let cache_dir = dir.path().join(".cache/taoki");
+        fs::create_dir_all(&cache_dir).unwrap();
+        let stale_cache = serde_json::json!({
+            "version": CACHE_VERSION,
+            "files": {
+                "lib.rs": {
+                    "hash": "0000000000000000000000000000000000000000000000000000000000000000",
+                    "lines": 1,
+                    "public_types": ["Foo"],
+                    "public_functions": [],
+                    "tags": [],
+                    "skeleton": ""
+                }
+            }
+        });
+        fs::write(cache_dir.join("code-map.json"), serde_json::to_string(&stale_cache).unwrap()).unwrap();
+
+        // Write enrichment cache with the CORRECT file hash
+        let enrichment = serde_json::json!({
+            "version": 1,
+            "model": "haiku",
+            "repo_root_hash": root_hash,
+            "files": {
+                "lib.rs": {
+                    "hash": actual_hash,
+                    "enrichment": "Stale cache test."
+                }
+            }
+        });
+        fs::write(cache_dir.join("enriched.json"), serde_json::to_string(&enrichment).unwrap()).unwrap();
+
+        let result = build_code_map(dir.path(), &[], &[]).unwrap();
+        assert!(
+            result.contains("[enriched] Stale cache test."),
+            "enrichment should display even with stale code-map cache hash:\n{result}"
+        );
     }
 
     #[test]
