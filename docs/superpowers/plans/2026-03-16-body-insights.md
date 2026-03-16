@@ -1802,3 +1802,26 @@ Compare the output length of `index` on the benchmark fixtures before and after.
 git add -A
 git commit -m "chore: cleanup after manual verification"
 ```
+
+---
+
+## Post-plan amendment: filter Rust constructor calls
+
+In `extract_calls`, for Rust only, exclude common constructors that add noise without insight: `Err`, `Ok`, `Some`, `None`. These are enum variant constructors, not meaningful call targets. Add a constant:
+
+```rust
+const RUST_CALL_EXCLUSIONS: &[&str] = &["Err", "Ok", "Some", "None"];
+```
+
+Apply in `extract_calls` when `lang == Language::Rust`:
+```rust
+if lang == Language::Rust && RUST_CALL_EXCLUSIONS.contains(&name) {
+    return; // inside the walk_body visitor
+}
+```
+
+Add a test verifying these are excluded. Update the Rust golden test to remove `Err` and `Ok` from expected calls.
+
+## Known limitation: inline closures
+
+Nested function/closure skipping (`closure_expression` in Rust, `arrow_function` in TS/JS, `lambda` in Python) also skips inline callbacks like `items.map(|x| foo(x))`. Calls inside these closures won't appear in the parent's insights. This is a trade-off: including them would also include calls inside returned closures and stored lambdas, which DO represent separate scopes. Revisit post-merge if users report missing calls from iterator chains.
