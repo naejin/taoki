@@ -4,6 +4,7 @@ use crate::index::{
     FIELD_TRUNCATE_THRESHOLD, LanguageExtractor, Section, SkeletonEntry, find_child, line_range,
     node_text, prefixed, PublicApi,
 };
+use crate::index::body;
 
 pub(crate) struct JavaExtractor;
 
@@ -96,6 +97,11 @@ impl JavaExtractor {
                     let lr =
                         line_range(child.start_position().row + 1, child.end_position().row + 1);
                     members.push(format!("{sig} {lr}"));
+                    // Append body insights for this method
+                    let insights = body::analyze_body(child, source, crate::index::Language::Java);
+                    for line in insights.format_lines() {
+                        members.push(format!("  {line}"));
+                    }
                 }
                 "field_declaration" => {
                     if members.len() < FIELD_TRUNCATE_THRESHOLD {

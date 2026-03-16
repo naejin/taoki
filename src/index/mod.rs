@@ -423,7 +423,7 @@ pub fn index_source(source: &[u8], lang: Language) -> Result<String, IndexError>
     let root = tree.root_node();
     let extractor = lang.extractor();
 
-    Ok(build_skeleton(root, source, extractor))
+    Ok(build_skeleton(root, source, extractor, lang))
 }
 
 pub fn extract_all(source: &[u8], lang: Language) -> Result<(PublicApi, String), IndexError> {
@@ -437,11 +437,11 @@ pub fn extract_all(source: &[u8], lang: Language) -> Result<(PublicApi, String),
     let extractor = lang.extractor();
 
     let api = extractor.extract_public_api(root, source);
-    let skeleton = build_skeleton(root, source, extractor);
+    let skeleton = build_skeleton(root, source, extractor, lang);
     Ok((api, skeleton))
 }
 
-fn build_skeleton(root: Node, source: &[u8], extractor: &dyn LanguageExtractor) -> String {
+fn build_skeleton(root: Node, source: &[u8], extractor: &dyn LanguageExtractor, lang: Language) -> String {
     let module_doc = detect_module_doc(root, source, extractor);
     let mut entries = Vec::new();
     let mut test_lines: Vec<usize> = Vec::new();
@@ -465,6 +465,12 @@ fn build_skeleton(root: Node, source: &[u8], extractor: &dyn LanguageExtractor) 
                 if let Some(doc_start) = doc_comment_start_line(child, source, extractor) {
                     entry.line_start = entry.line_start.min(doc_start);
                 }
+            }
+            // Analyze body for top-level functions and Go methods (which use Section::Impl)
+            let is_function = entry.section == Section::Function;
+            let is_go_method = lang == Language::Go && child.kind() == "method_declaration";
+            if is_function || is_go_method {
+                entry.insights = body::analyze_body(child, source, lang);
             }
             entries.push(entry);
         }

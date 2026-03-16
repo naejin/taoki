@@ -4,6 +4,7 @@ use crate::index::{
     LanguageExtractor, PublicApi, Section, SkeletonEntry, find_child, line_range, node_text,
     truncate,
 };
+use crate::index::body;
 
 pub(crate) struct PythonExtractor;
 
@@ -62,6 +63,11 @@ impl PythonExtractor {
                 }
 
                 methods.push(format!("{fn_name}{params}{ret_str} {lr}"));
+                // Append body insights for this method
+                let insights = body::analyze_body(fn_node, source, crate::index::Language::Python);
+                for line in insights.format_lines() {
+                    methods.push(format!("  {line}"));
+                }
             }
         }
 
