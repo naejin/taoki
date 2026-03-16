@@ -1,6 +1,6 @@
 {
   "name": "taoki",
-  "version": "0.1.0",
+  "version": "0.5.1",
   "description": "Code indexing and structural mapping for Claude Code",
   "author": {
     "name": "Daylon"

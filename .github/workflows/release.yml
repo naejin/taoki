@@ -41,6 +41,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Sync plugin.json version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          python3 -c "
+          import json, sys
+          p = '.claude-plugin/plugin.json'
+          d = json.load(open(p))
+          d['version'] = sys.argv[1]
+          json.dump(d, open(p, 'w'), indent=2)
+          " "$VERSION"
+        shell: bash
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
