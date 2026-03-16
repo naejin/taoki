@@ -401,7 +401,7 @@ fn call_index(args: &Value) -> ToolResult {
     }
 }
 
-fn is_test_filename(path: &std::path::Path) -> bool {
+pub fn is_test_filename(path: &std::path::Path) -> bool {
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
     let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
@@ -438,7 +438,7 @@ fn call_code_map(args: &Value) -> ToolResult {
         })
         .unwrap_or_default();
 
-    match codemap::build_code_map(std::path::Path::new(path), &globs) {
+    match codemap::build_code_map(std::path::Path::new(path), &globs, &[]) {
         Ok(map) => ToolResult {
             content: vec![ToolContent {
                 r#type: "text".to_string(),

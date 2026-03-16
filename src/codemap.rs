@@ -30,6 +30,8 @@ struct CacheEntry {
     public_functions: Vec<String>,
     #[serde(default)]
     tags: Vec<String>,
+    #[serde(default)]
+    skeleton: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -50,14 +52,21 @@ pub struct EnrichmentEntry {
     pub enrichment: String,
 }
 
-const CACHE_VERSION: u32 = 2;
+const CACHE_VERSION: u32 = 3;
 const CACHE_DIR: &str = ".cache/taoki";
 const CACHE_FILE: &str = "code-map.json";
 const ENRICHMENT_FILE: &str = "enriched.json";
 const ENRICHMENT_VERSION: u32 = 1;
 
-/// (path, lines, public_types, public_functions, tags, parse_error)
-type FileResult = (String, usize, Vec<String>, Vec<String>, Vec<String>, bool);
+struct FileResult {
+    path: String,
+    lines: usize,
+    public_types: Vec<String>,
+    public_functions: Vec<String>,
+    tags: Vec<String>,
+    parse_error: bool,
+    skeleton: String,
+}
 
 fn walk_files(root: &Path, globs: &[String]) -> Result<Vec<PathBuf>, CodeMapError> {
     use globset::{Glob, GlobSetBuilder};
@@ -393,10 +402,18 @@ fn compute_tags(
     tags
 }
 
-pub fn build_code_map(root: &Path, globs: &[String]) -> Result<String, CodeMapError> {
+pub fn build_code_map(root: &Path, globs: &[String], detail_files: &[String]) -> Result<String, CodeMapError> {
     let files = walk_files(root, globs)?;
     let mut cache = load_cache(root);
     let enrichments = load_enrichment_cache(root);
+
+    let detail_set: std::collections::HashSet<String> = detail_files
+        .iter()
+        .map(|f| {
+            let normalized = f.replace('\\', "/");
+            normalized.strip_prefix("./").unwrap_or(&normalized).to_string()
+        })
+        .collect();
 
     // Invalidate cache if version changed
     if cache.version != CACHE_VERSION {
@@ -424,20 +441,22 @@ pub fn build_code_map(root: &Path, globs: &[String]) -> Result<String, CodeMapEr
         // Check cache
         if let Some(cached) = cache.files.get(&rel) {
             if cached.hash == hash {
-                results.push((
-                    rel.clone(),
-                    cached.lines,
-                    cached.public_types.clone(),
-                    cached.public_functions.clone(),
-                    cached.tags.clone(),
-                    false,
-                ));
+                results.push(FileResult {
+                    path: rel.clone(),
+                    lines: cached.lines,
+                    public_types: cached.public_types.clone(),
+                    public_functions: cached.public_functions.clone(),
+                    tags: cached.tags.clone(),
+                    parse_error: false,
+                    skeleton: cached.skeleton.clone(),
+                });
                 new_files.insert(rel, CacheEntry {
                     hash,
                     lines: cached.lines,
                     public_types: cached.public_types.clone(),
                     public_functions: cached.public_functions.clone(),
                     tags: cached.tags.clone(),
+                    skeleton: cached.skeleton.clone(),
                 });
                 continue;
             }
@@ -456,11 +475,29 @@ pub fn build_code_map(root: &Path, globs: &[String]) -> Result<String, CodeMapEr
 
         let lines = source.iter().filter(|&&b| b == b'\n').count() + 1;
 
-        let (public_types, public_functions) =
-            match index::extract_public_api(&source, lang) {
-                Ok(api) => api,
+        // Check if test file — collapse skeleton but still extract public API
+        let is_test = crate::mcp::is_test_filename(file_path);
+
+        let (public_types, public_functions, skeleton) =
+            match index::extract_all(&source, lang) {
+                Ok((api, skel)) => {
+                    let final_skeleton = if is_test {
+                        format!("tests: [1-{}]\n", lines)
+                    } else {
+                        skel
+                    };
+                    (api.types, api.functions, final_skeleton)
+                }
                 Err(_) => {
-                    results.push((rel.clone(), lines, Vec::new(), Vec::new(), Vec::new(), true));
+                    results.push(FileResult {
+                        path: rel.clone(),
+                        lines,
+                        public_types: Vec::new(),
+                        public_functions: Vec::new(),
+                        tags: Vec::new(),
+                        parse_error: true,
+                        skeleton: String::new(),
+                    });
                     continue;
                 }
             };
@@ -475,10 +512,19 @@ pub fn build_code_map(root: &Path, globs: &[String]) -> Result<String, CodeMapEr
                 public_types: public_types.clone(),
                 public_functions: public_functions.clone(),
                 tags: tags.clone(),
+                skeleton: skeleton.clone(),
             },
         );
 
-        results.push((rel, lines, public_types, public_functions, tags, false));
+        results.push(FileResult {
+            path: rel,
+            lines,
+            public_types,
+            public_functions,
+            tags,
+            parse_error: false,
+            skeleton,
+        });
     }
 
     // Update and save cache
@@ -492,40 +538,47 @@ pub fn build_code_map(root: &Path, globs: &[String]) -> Result<String, CodeMapEr
     crate::deps::save_deps_cache(root, &graph);
 
     // Sort by path and format output
-    results.sort_by(|a, b| a.0.cmp(&b.0));
+    results.sort_by(|a, b| a.path.cmp(&b.path));
 
     let mut out = String::new();
-    for (path, lines, types, fns, tags, parse_error) in &results {
-        if *parse_error {
-            out.push_str(&format!("- {path} ({lines} lines) (parse error)\n"));
+    for fr in &results {
+        if fr.parse_error {
+            out.push_str(&format!("- {} ({} lines) (parse error)\n", fr.path, fr.lines));
             continue;
         }
-        let tags_str = if tags.is_empty() {
+        let tags_str = if fr.tags.is_empty() {
             String::new()
         } else {
-            format!(" {}", tags.iter().map(|t| format!("[{t}]")).collect::<Vec<_>>().join(" "))
+            format!(" {}", fr.tags.iter().map(|t| format!("[{t}]")).collect::<Vec<_>>().join(" "))
         };
-        let types_str = if types.is_empty() {
+        let types_str = if fr.public_types.is_empty() {
             "(none)".to_string()
         } else {
-            types.join(", ")
+            fr.public_types.join(", ")
         };
-        let fns_str = if fns.is_empty() {
+        let fns_str = if fr.public_functions.is_empty() {
             "(none)".to_string()
         } else {
-            fns.join(", ")
+            fr.public_functions.join(", ")
         };
         out.push_str(&format!(
-            "- {path} ({lines} lines){tags_str} - public_types: {types_str} - public_functions: {fns_str}\n"
+            "- {} ({} lines){tags_str} - public_types: {types_str} - public_functions: {fns_str}\n",
+            fr.path, fr.lines
         ));
-        if let Some(enrich_entry) = enrichments.get(path) {
-            if let Some(cache_entry) = cache.files.get(path) {
+        if let Some(enrich_entry) = enrichments.get(&fr.path) {
+            if let Some(cache_entry) = cache.files.get(&fr.path) {
                 if enrich_entry.hash == cache_entry.hash {
                     out.push_str(&format!(
                         "  [enriched] {}\n",
                         enrich_entry.enrichment.replace('\n', " ")
                     ));
                 }
+            }
+        }
+        if detail_set.contains(&fr.path) && !fr.skeleton.is_empty() {
+            out.push_str("  [skeleton]\n");
+            for line in fr.skeleton.lines() {
+                out.push_str(&format!("  {line}\n"));
             }
         }
     }
@@ -544,7 +597,7 @@ mod tests {
         let file = dir.path().join("lib.rs");
         fs::write(&file, "pub struct Foo {}\npub fn bar() {}\nfn private() {}\n").unwrap();
 
-        let result = build_code_map(dir.path(), &[]).unwrap();
+        let result = build_code_map(dir.path(), &[], &[]).unwrap();
         assert!(result.contains("lib.rs"));
         assert!(result.contains("Foo"));
         assert!(result.contains("bar()"));
@@ -558,16 +611,16 @@ mod tests {
         fs::write(&file, "pub struct Foo {}\n").unwrap();
 
         // First call — builds cache
-        let r1 = build_code_map(dir.path(), &[]).unwrap();
+        let r1 = build_code_map(dir.path(), &[], &[]).unwrap();
         assert!(dir.path().join(".cache/taoki/code-map.json").exists());
 
         // Second call — uses cache (same result)
-        let r2 = build_code_map(dir.path(), &[]).unwrap();
+        let r2 = build_code_map(dir.path(), &[], &[]).unwrap();
         assert_eq!(r1, r2);
 
         // Modify file — cache miss
         fs::write(&file, "pub struct Bar {}\n").unwrap();
-        let r3 = build_code_map(dir.path(), &[]).unwrap();
+        let r3 = build_code_map(dir.path(), &[], &[]).unwrap();
         assert!(r3.contains("Bar"));
         assert!(!r3.contains("Foo"));
     }
@@ -578,7 +631,7 @@ mod tests {
         let file = dir.path().join("main.rs");
         fs::write(&file, "fn main() {}\n").unwrap();
 
-        let result = build_code_map(dir.path(), &[]).unwrap();
+        let result = build_code_map(dir.path(), &[], &[]).unwrap();
         assert!(result.contains("[entry-point]"), "missing entry-point tag in:\n{result}");
     }
 
@@ -588,7 +641,7 @@ mod tests {
         let file = dir.path().join("test_auth.py");
         fs::write(&file, "def test_login():\n    pass\n").unwrap();
 
-        let result = build_code_map(dir.path(), &[]).unwrap();
+        let result = build_code_map(dir.path(), &[], &[]).unwrap();
         assert!(result.contains("[tests]"), "missing tests tag in:\n{result}");
     }
 
@@ -600,7 +653,7 @@ mod tests {
         let file = sub.join("mod.rs");
         fs::write(&file, "pub fn foo() {}\n").unwrap();
 
-        let result = build_code_map(dir.path(), &[]).unwrap();
+        let result = build_code_map(dir.path(), &[], &[]).unwrap();
         assert!(result.contains("[module-root]"), "missing module-root tag in:\n{result}");
     }
 
@@ -610,7 +663,7 @@ mod tests {
         let file = dir.path().join("errors.rs");
         fs::write(&file, "pub enum MyError { Io, Parse }\n").unwrap();
 
-        let result = build_code_map(dir.path(), &[]).unwrap();
+        let result = build_code_map(dir.path(), &[], &[]).unwrap();
         assert!(result.contains("[error-types]"), "missing error-types tag in:\n{result}");
     }
 
@@ -690,13 +743,34 @@ mod tests {
     }
 
     #[test]
+    fn cache_stores_skeleton() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("lib.rs");
+        fs::write(&file, "pub struct Foo {}\npub fn bar() {}\n").unwrap();
+
+        // First call: parses and caches
+        let result = build_code_map(dir.path(), &[], &[]).unwrap();
+        assert!(!result.contains("[skeleton]"));
+
+        // Verify cache contains skeleton
+        let cache_path = dir.path().join(".cache/taoki/code-map.json");
+        let cache_data: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&cache_path).unwrap()).unwrap();
+        let skeleton = cache_data["files"]["lib.rs"]["skeleton"].as_str().unwrap();
+        assert!(skeleton.contains("types:"));
+        assert!(skeleton.contains("Foo"));
+        assert!(skeleton.contains("fns:"));
+        assert!(skeleton.contains("bar()"));
+    }
+
+    #[test]
     fn code_map_includes_enrichment() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("lib.rs");
         fs::write(&file, "pub struct Foo {}\n").unwrap();
 
         // First call to build the code-map cache and get the hash
-        let _ = build_code_map(dir.path(), &[]).unwrap();
+        let _ = build_code_map(dir.path(), &[], &[]).unwrap();
 
         // Read the code-map cache to get the hash
         let cache_path = dir.path().join(".cache/taoki/code-map.json");
@@ -735,7 +809,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = build_code_map(dir.path(), &[]).unwrap();
+        let result = build_code_map(dir.path(), &[], &[]).unwrap();
         assert!(result.contains("[enriched] Library root module."));
     }
 }
