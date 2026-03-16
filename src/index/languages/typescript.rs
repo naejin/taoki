@@ -4,6 +4,7 @@ use crate::index::{
     LanguageExtractor, PublicApi, Section, SkeletonEntry, find_child, line_range, node_text,
     truncate,
 };
+use crate::index::body;
 
 fn ts_return_type(node: Node, source: &[u8]) -> String {
     let r = node_text(node, source);
@@ -61,6 +62,13 @@ impl TsJsExtractor {
                     let lr =
                         line_range(child.start_position().row + 1, child.end_position().row + 1);
                     methods.push(format!("{mn}{params_str}{ret_str} {lr}"));
+                    // Append body insights for this method
+                    if child.kind() == "method_definition" {
+                        let insights = body::analyze_body(child, source, crate::index::Language::TypeScript);
+                        for line in insights.format_lines() {
+                            methods.push(format!("  {line}"));
+                        }
+                    }
                 }
                 _ => {}
             }

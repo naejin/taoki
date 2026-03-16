@@ -6,6 +6,7 @@ use crate::index::{
 };
 
 use crate::index::FIELD_TRUNCATE_THRESHOLD;
+use crate::index::body;
 
 pub(crate) struct RustExtractor;
 
@@ -147,6 +148,11 @@ impl RustExtractor {
                 methods.push(format!("{} {lr}", prefixed(vis, format_args!("{sig}"))));
             } else {
                 methods.push(format!("{sig} {lr}"));
+            }
+            // Append body insights for this method
+            let insights = body::analyze_body(child, source, crate::index::Language::Rust);
+            for line in insights.format_lines() {
+                methods.push(format!("  {line}"));
             }
         }
         methods
