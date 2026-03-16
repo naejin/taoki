@@ -26,13 +26,6 @@ pub(crate) struct BodyInsights {
 }
 
 impl BodyInsights {
-    pub(crate) fn is_empty(&self) -> bool {
-        self.calls.is_empty()
-            && self.match_arms.is_empty()
-            && self.error_returns.is_empty()
-            && self.try_count == 0
-    }
-
     pub(crate) fn format_lines(&self) -> Vec<String> {
         let mut lines = Vec::new();
 
@@ -539,7 +532,6 @@ mod tests {
     #[test]
     fn test_format_lines_empty() {
         let insights = BodyInsights::default();
-        assert!(insights.is_empty());
         assert!(insights.format_lines().is_empty());
     }
 
@@ -549,7 +541,6 @@ mod tests {
             calls: vec!["bar".into(), "foo".into(), "qux".into()],
             ..Default::default()
         };
-        assert!(!insights.is_empty());
         assert_eq!(insights.format_lines(), vec!["→ calls: bar, foo, qux"]);
     }
 
