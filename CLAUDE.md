@@ -19,7 +19,7 @@ Four modules under `src/`:
 
 - **`main.rs`** — MCP stdio transport. Auto-detects framing (Content-Length headers vs bare JSONL). Reads requests, dispatches to `mcp::handle_request`, writes responses. Supports `--version` flag (prints version from `Cargo.toml` and exits before MCP loop).
 - **`mcp.rs`** — JSON-RPC dispatch. Routes `initialize`, `ping`, `tools/list`, `tools/call`. Tool calls dispatch to `call_index`, `call_code_map`, and `call_dependencies`. Also handles filename-based test file detection (collapses entire test files in `index` output).
-- **`codemap.rs`** — `build_code_map()` walks a repo (respecting .gitignore), hashes files with blake3, caches results in `.cache/taoki/code-map.json` with file-level locking (fs2). Calls `index::extract_public_api` for each file. Computes heuristic tags per file (`[entry-point]`, `[tests]`, `[error-types]`, `[module-root]`, etc.). Also triggers dependency graph building via `deps.rs`. Loads and merges LLM enrichment data from `.cache/taoki/enriched.json` when available.
+- **`codemap.rs`** — `build_code_map()` walks a repo (respecting .gitignore), hashes files with blake3, caches results in `.cache/taoki/code-map.json` with file-level locking (fs2). Calls `index::extract_all` for each file to get both public API and structural skeleton in a single parse pass. Computes heuristic tags per file (`[entry-point]`, `[tests]`, `[error-types]`, `[module-root]`, etc.). Supports optional `files` parameter to include full skeletons inline for specific files. Also triggers dependency graph building via `deps.rs`. Loads and merges LLM enrichment data from `.cache/taoki/enriched.json` when available.
 - **`deps.rs`** — Cross-file dependency graph. Extracts imports from source files using tree-sitter, resolves them to actual files in the repo (best-effort, language-specific), and builds a cached graph. Provides `query_deps()` to show depends_on/used_by/external for any file. Cache stored at `.cache/taoki/deps.json`.
 - **`index/`** — `index_file()` and `index_source()` use tree-sitter to parse source files and extract structural skeletons (imports, types, functions, impls, modules). Language-specific extractors live in `index/languages/` — one file per language. TypeScript and JavaScript share `typescript.rs`. Each extractor implements `is_test_node()` to detect and collapse test code. The `index` tool outputs sections: `imports:`, `consts:`, `exprs:` (top-level expressions for Python/TypeScript), `types:`, `traits:`, `impls:`, `fns:`, `classes:`, `mod:`, `macros:`, and `tests:`.
 
@@ -31,7 +31,7 @@ Rust (.rs), Python (.py, .pyi), TypeScript (.ts, .tsx), JavaScript (.js, .jsx, .
 
 - All tree-sitter grammars pinned to 0.23, tree-sitter core at 0.26.
 - Error types use `thiserror` derive macros.
-- Cache is stored at `<repo>/.cache/taoki/` (gitignored): `code-map.json` (v2, with tags), `deps.json` (dependency graph), and `enriched.json` (LLM-generated semantic summaries).
+- Cache is stored at `<repo>/.cache/taoki/` (gitignored): `code-map.json` (v3, with tags and skeletons), `deps.json` (dependency graph), and `enriched.json` (LLM-generated semantic summaries).
 - Files over 2MB are skipped (`MAX_FILE_SIZE` in `index/mod.rs`).
 - Struct fields are truncated after 8 fields (`FIELD_TRUNCATE_THRESHOLD`).
 - The `ignore` crate handles directory walking (respects .gitignore, global gitignore, and git exclude).
