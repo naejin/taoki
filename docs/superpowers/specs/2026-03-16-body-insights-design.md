@@ -238,3 +238,18 @@ The `analyze_body()` function first extracts the body node via `child_by_field_n
 - Use inline source code strings (consistent with existing test patterns using `tempfile`).
 - Test cases for each language covering: simple calls, chained/nested calls, match/switch with multiple arms, error construction, nested functions (should not leak), truncation behavior.
 - Existing tests in `index/mod.rs` (the `*_all_sections` tests) should continue passing — the new insights are additive.
+
+## Determinism and formatting rules
+
+- **`format_lines()` ordering**: Always `calls`, then `match`, then `errors`. Empty sections are omitted entirely.
+- **Calls sorting**: Lexicographic, case-sensitive sort before truncation. Ensures stable output regardless of AST traversal order.
+- **Error returns ordering**: Preserve source order (reflects the function’s failure sequence). Deduplicate but don’t sort.
+- **Match/switch arms ordering**: Preserve source order (reflects dispatch semantics — common cases first, default last).
+- **Truncation style**: Use `…` (Unicode ellipsis) appended after the max character count, consistent with existing `truncate()` in `index/mod.rs`. Example: `"CodeMapError::PathNotFo…"` at 30 chars.
+- **`?` propagation count**: Omit when zero. When nonzero, include as a single item in the errors line: `5× ?` alongside named error types.
+- **`analyze_body()` input node**: Receives the function declaration node itself (e.g., `function_item`), not the body. Internally extracts the body via `child_by_field_name("body")`.
+- **Method insight placement**: Insight lines are appended immediately after the method signature string in the children vec, before any other synthetic children.
+
+## Testing strategy additions
+
+- One negative test per language confirming nested functions/closures do not leak calls, match arms, or errors into the parent function’s insights.
