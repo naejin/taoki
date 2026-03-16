@@ -984,4 +984,43 @@ public class Bare {}
         ]);
         lacks(&out, &["/// Bare", "Contains identity"]);
     }
+
+    #[test]
+    fn python_doc_comment_extracted() {
+        let src = r#"
+def fetch_user(user_id: str) -> User:
+    """Fetch a user from the database."""
+    pass
+
+class Config:
+    """Application configuration."""
+    host: str
+    port: int
+
+def bare():
+    pass
+
+def multiline_doc():
+    """
+    Summary on second line.
+    More details here.
+    """
+    pass
+"#;
+        let out = idx(src, Language::Python);
+        has(&out, &[
+            "/// Fetch a user from the database.",
+            "/// Application configuration.",
+            "/// Summary on second line.",
+        ]);
+        lacks(&out, &["/// bare", "More details"]);
+    }
+
+    #[test]
+    fn python_empty_docstring_ignored() {
+        let src = "def empty():\n    \"\"\"   \"\"\"\n    pass\n";
+        let out = idx(src, Language::Python);
+        has(&out, &["empty()"]);
+        lacks(&out, &["///"]);
+    }
 }
