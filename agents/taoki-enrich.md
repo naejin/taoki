@@ -13,31 +13,22 @@ If the environment variable `TAOKI_NO_ENRICHMENT` is set, output "Enrichment dis
 
 ## Process
 
-1. Call `mcp__taoki__code_map` with the current working directory to get the file list with blake3 hashes and tags.
+1. Run `./scripts/run.sh --enrichment-status` using the Bash tool to get the list of stale files with correct blake3 hashes and the `repo_root_hash`. If `"stale":false`, output "Enrichment is up to date" and stop.
 
-2. Read `.cache/taoki/enriched.json` using the Bash tool (`cat .cache/taoki/enriched.json 2>/dev/null || echo '{}'`). Parse the JSON to identify which files need enrichment:
-   - Files missing from `enriched.json`
-   - Files whose hash differs between `code-map.json` and `enriched.json`
-   - Remove orphaned entries (paths in `enriched.json` that don't appear in the code map)
+2. Parse the JSON output:
+   - `files` array: files needing enrichment, each with `path`, `hash`, and `reason`
+   - `orphaned` array: paths to remove from `enriched.json`
+   - `repo_root_hash`: use this value in the output file
 
 3. Prioritize stale files in this order:
-   - `[entry-point]` tagged files first
-   - `[module-root]` tagged files
-   - `[error-types]` tagged files
-   - `[interfaces]` tagged files
-   - `[data-models]` tagged files
-   - `[http-handlers]` tagged files
-   - All remaining files by line count (larger first)
+   - Files with reason `"missing"` first (new files)
+   - Files with reason `"hash_mismatch"` second (changed files)
+   - Within each group, larger files first (call `mcp__taoki__index` to check)
 
-4. Skip files that match these patterns:
-   - Paths containing: `target/`, `dist/`, `build/`, `generated/`, `vendor/`, `node_modules/`
-   - Filenames matching: `*.generated.*`, `*.gen.*`, `*.pb.*`
-   - Files with 0 lines
-
-5. For each stale file (process up to 50 per session):
+4. For each stale file (process up to 50 per session):
    a. Call `mcp__taoki__index` with the file path to get the structural skeleton.
    b. Analyze the skeleton and produce an enrichment entry (see Analysis Format below).
-   c. After each file, write the complete updated `enriched.json` atomically using the Bash tool:
+   c. After each file, read the current `enriched.json` (if it exists) via Bash (`cat .cache/taoki/enriched.json 2>/dev/null || echo '{}'`), merge the new entry, remove any `orphaned` paths, and write atomically:
       ```bash
       cat > .cache/taoki/enriched.json.tmp << 'ENRICHMENT_EOF'
       <full JSON content>
@@ -45,7 +36,15 @@ If the environment variable `TAOKI_NO_ENRICHMENT` is set, output "Enrichment dis
       mv .cache/taoki/enriched.json.tmp .cache/taoki/enriched.json
       ```
 
-6. Output a summary: "Enriched X files (Y skipped, Z remaining)."
+5. Output a summary: "Enriched X files (Y skipped, Z remaining)."
+
+## Critical Rules
+
+- Do NOT read `code-map.json` or `enriched.json` to determine which files need enrichment. Use ONLY the output of `--enrichment-status`.
+- Do NOT compute file hashes with `b3sum`, `sha256sum`, `hashlib`, or any other tool.
+- Do NOT compute `repo_root_hash` — use the value from `--enrichment-status`.
+- Do NOT use any hash value other than what `--enrichment-status` provided.
+- When writing `enriched.json`, use the exact `hash` value from `--enrichment-status` for each file entry.
 
 ## Analysis Format
 
@@ -70,14 +69,12 @@ For each file, produce a single text block. The analysis must be **factual and i
 {
   "version": 1,
   "model": "haiku",
-  "repo_root_hash": "<blake3 hash of absolute repo root path>",
+  "repo_root_hash": "<from --enrichment-status output>",
   "files": {
     "relative/path/to/file.rs": {
-      "hash": "<blake3 hash from code_map>",
+      "hash": "<from --enrichment-status output>",
       "enrichment": "Purpose statement.\nconventions: ...\ntype_relationships: ..."
     }
   }
 }
 ```
-
-Compute `repo_root_hash` by running: `RPATH=$(realpath "$(pwd)" 2>/dev/null) && echo -n "$RPATH" | b3sum --no-names 2>/dev/null || echo ""`. The `realpath` resolves symlinks to match the Rust binary's `canonicalize()`. If either `realpath` or `b3sum` is unavailable, the command yields an empty string `""`. The Rust reader accepts empty strings and skips the repo root validation in that case — this is safe because the cache lives inside the repo's `.cache/` directory, making cross-repo collisions unlikely.
