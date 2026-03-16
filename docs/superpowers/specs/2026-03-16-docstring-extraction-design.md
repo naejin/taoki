@@ -118,7 +118,7 @@ Doc line sits between the item header and its children, at the same indentation 
 ### What does NOT change
 
 - `code_map` output — enrichment summaries already serve a similar role at repo level
-- Cache structure — docstrings are extracted at parse time alongside the skeleton, not cached separately
+- Cache structure — docstrings are extracted at parse time alongside the skeleton, not cached separately. However, `CACHE_VERSION` must bump from 3 to 4 so that stale caches (whose skeletons lack `///` lines) auto-invalidate on first run
 - `dependencies` output — unrelated
 - `extract_public_api()` — returns type/function names only, no docstrings needed there
 
