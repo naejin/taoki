@@ -867,4 +867,44 @@ fn no_doc() {}
         ]);
         lacks(&out, &["/// no_doc"]);
     }
+
+    #[test]
+    fn rust_doc_multiline_takes_first() {
+        let src = "\
+/// Summary line here.
+/// More details on second line.
+/// Even more details.
+pub fn documented() {}
+";
+        let out = idx(src, Language::Rust);
+        has(&out, &["/// Summary line here."]);
+        lacks(&out, &["More details", "Even more"]);
+    }
+
+    #[test]
+    fn rust_doc_with_attrs() {
+        let src = "\
+/// Does the thing.
+#[derive(Debug)]
+pub struct Thing {}
+";
+        let out = idx(src, Language::Rust);
+        has(&out, &["/// Does the thing."]);
+    }
+
+    #[test]
+    fn rust_no_doc_no_line() {
+        let src = "pub fn bare() {}\n";
+        let out = idx(src, Language::Rust);
+        lacks(&out, &["///"]);
+    }
+
+    #[test]
+    fn rust_empty_doc_comment_ignored() {
+        let src = "///\n///   \npub fn blank_doc() {}\n";
+        let out = idx(src, Language::Rust);
+        lacks(&out, &["/// \n"]);
+        // The output should contain the function but no doc line
+        has(&out, &["pub blank_doc()"]);
+    }
 }
