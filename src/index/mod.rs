@@ -677,6 +677,7 @@ export class Service {
     process(input: string): string { return input; }
 }
 
+/** The main handler. */
 export function handler(req: Request): Response { return new Response(); }
 ";
         let out = idx(src, Language::TypeScript);
@@ -693,6 +694,7 @@ export function handler(req: Request): Response { return new Response(); }
             "export Service",
             "fns:",
             "export handler(req: Request)",
+            "/// The main handler.",
         ]);
     }
 
