@@ -431,7 +431,7 @@ pub fn build_code_map(root: &Path, globs: &[String], detail_files: &[String]) ->
             .strip_prefix(root)
             .unwrap_or(file_path)
             .to_string_lossy()
-            .to_string();
+            .replace('\\', "/");
 
         let hash = match hash_file(file_path) {
             Ok(h) => h,

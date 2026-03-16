@@ -459,7 +459,15 @@ pub fn extract_all(source: &[u8], lang: Language) -> Result<(PublicApi, String),
 }
 
 pub fn extract_public_api(source: &[u8], lang: Language) -> Result<(Vec<String>, Vec<String>), IndexError> {
-    let (api, _skeleton) = extract_all(source, lang)?;
+    let mut parser = Parser::new();
+    parser
+        .set_language(&lang.ts_language())
+        .map_err(|_| IndexError::ParseFailed)?;
+
+    let tree = parser.parse(source, None).ok_or(IndexError::ParseFailed)?;
+    let root = tree.root_node();
+    let extractor = lang.extractor();
+    let api = extractor.extract_public_api(root, source);
     Ok((api.types, api.functions))
 }
 
