@@ -140,7 +140,7 @@ impl PythonExtractor {
             Some(SkeletonEntry::new(
                 Section::Expression,
                 node,
-                format!("if __name__ == \"__main__\""),
+                "if __name__ == \"__main__\"".to_string(),
             ))
         } else {
             None
