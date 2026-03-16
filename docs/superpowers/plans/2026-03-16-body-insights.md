@@ -1822,6 +1822,201 @@ if lang == Language::Rust && RUST_CALL_EXCLUSIONS.contains(&name) {
 
 Add a test verifying these are excluded. Update the Rust golden test to remove `Err` and `Ok` from expected calls.
 
-## Known limitation: inline closures
+## Post-plan amendment: descend into inline closures
 
-Nested function/closure skipping (`closure_expression` in Rust, `arrow_function` in TS/JS, `lambda` in Python) also skips inline callbacks like `items.map(|x| foo(x))`. Calls inside these closures won't appear in the parent's insights. This is a trade-off: including them would also include calls inside returned closures and stored lambdas, which DO represent separate scopes. Revisit post-merge if users report missing calls from iterator chains.
+### Task 16: Descend into closures/lambdas passed as direct call arguments
+
+**Files:**
+- Modify: `src/index/body.rs` (update `is_nested_function_def`, add tests)
+
+Closures/lambdas that are **direct arguments** to a call (e.g., `items.map(|x| foo(x))`) are inline logic — part of the current function's flow. Closures that are **assigned to variables or returned** represent separate scopes and should still be skipped.
+
+The heuristic: check if the closure node's parent is an arguments list. If yes, descend into it. If no, skip it.
+
+- [ ] **Step 1: Write test for inline closure descending**
+
+```rust
+#[test]
+fn test_walk_body_descends_inline_closure_rust() {
+    let src = r#"
+fn example() {
+    let items = vec![1, 2, 3];
+    items.iter().map(|x| transform(x)).collect();
+    let stored = |y| other(y);
+}
+"#;
+    let (tree, bytes) = parse_and_get_fn_body(src, Language::Rust);
+    let root = tree.root_node();
+    let fn_node = root.child(0).unwrap();
+    let body = fn_node.child_by_field_name("body").unwrap();
+
+    let mut calls = Vec::new();
+    walk_body(body, Language::Rust, &mut |node| {
+        if is_call_node(node, Language::Rust) {
+            if let Some(name) = extract_callee_name(node, &bytes, Language::Rust) {
+                calls.push(name.to_string());
+            }
+        }
+    });
+    // transform() is inside inline closure (argument to map) → INCLUDED
+    // other() is inside stored closure → EXCLUDED
+    assert!(calls.contains(&"transform".to_string()));
+    assert!(calls.contains(&"map".to_string()));
+    assert!(calls.contains(&"iter".to_string()));
+    assert!(calls.contains(&"collect".to_string()));
+    assert!(!calls.contains(&"other".to_string()));
+}
+
+#[test]
+fn test_walk_body_descends_inline_closure_typescript() {
+    let src = r#"
+function example() {
+    items.map((x) => transform(x));
+    const stored = () => other();
+    function inner() { nested(); }
+}
+"#;
+    let (tree, bytes) = parse_and_get_fn_body(src, Language::TypeScript);
+    let root = tree.root_node();
+    let fn_node = root.child(0).unwrap();
+    let body = fn_node.child_by_field_name("body").unwrap();
+
+    let mut calls = Vec::new();
+    walk_body(body, Language::TypeScript, &mut |node| {
+        if is_call_node(node, Language::TypeScript) {
+            if let Some(name) = extract_callee_name(node, &bytes, Language::TypeScript) {
+                calls.push(name.to_string());
+            }
+        }
+    });
+    // transform() inside inline arrow (argument to map) → INCLUDED
+    // other() inside stored arrow → EXCLUDED
+    // nested() inside inner function → EXCLUDED
+    assert!(calls.contains(&"transform".to_string()));
+    assert!(calls.contains(&"map".to_string()));
+    assert!(!calls.contains(&"other".to_string()));
+    assert!(!calls.contains(&"nested".to_string()));
+}
+
+#[test]
+fn test_walk_body_descends_inline_closure_python() {
+    let src = r#"
+def example():
+    items = list(map(lambda x: transform(x), data))
+    stored = lambda y: other(y)
+"#;
+    let (tree, bytes) = parse_and_get_fn_body(src, Language::Python);
+    let root = tree.root_node();
+    let fn_node = root.child(0).unwrap();
+    let body = fn_node.child_by_field_name("body").unwrap();
+
+    let mut calls = Vec::new();
+    walk_body(body, Language::Python, &mut |node| {
+        if is_call_node(node, Language::Python) {
+            if let Some(name) = extract_callee_name(node, &bytes, Language::Python) {
+                calls.push(name.to_string());
+            }
+        }
+    });
+    // transform() inside inline lambda (argument to map) → INCLUDED
+    // other() inside stored lambda → EXCLUDED
+    assert!(calls.contains(&"transform".to_string()));
+    assert!(calls.contains(&"map".to_string()));
+    assert!(!calls.contains(&"other".to_string()));
+}
+```
+
+- [ ] **Step 2: Update is_nested_function_def to check parent node**
+
+Replace the `is_nested_function_def` function:
+
+```rust
+/// Check if a closure/lambda's parent is an arguments list,
+/// meaning it's an inline callback that should be descended into.
+fn is_inline_callback(node: Node) -> bool {
+    node.parent().map_or(false, |p| {
+        matches!(p.kind(), "arguments" | "argument_list" | "call_expression")
+    })
+}
+
+/// Check if a node is a function/closure definition that should not be descended into.
+/// Inline closures (direct arguments to calls) ARE descended into.
+/// Named inner functions and stored/returned closures are NOT.
+fn is_nested_function_def(node: Node, lang: Language) -> bool {
+    match lang {
+        Language::Rust => {
+            if node.kind() == "function_item" {
+                return true;
+            }
+            if node.kind() == "closure_expression" {
+                return !is_inline_callback(node);
+            }
+            false
+        }
+        Language::Python => {
+            if node.kind() == "function_definition" {
+                return true;
+            }
+            if node.kind() == "lambda" {
+                return !is_inline_callback(node);
+            }
+            false
+        }
+        Language::TypeScript | Language::JavaScript => {
+            if node.kind() == "function_declaration" || node.kind() == "function" {
+                return true;
+            }
+            if node.kind() == "arrow_function" {
+                return !is_inline_callback(node);
+            }
+            false
+        }
+        Language::Go => {
+            if node.kind() == "function_declaration" {
+                return true;
+            }
+            if node.kind() == "func_literal" {
+                return !is_inline_callback(node);
+            }
+            false
+        }
+        Language::Java => {
+            if node.kind() == "method_declaration" {
+                return true;
+            }
+            if node.kind() == "lambda_expression" {
+                return !is_inline_callback(node);
+            }
+            false
+        }
+    }
+}
+```
+
+- [ ] **Step 3: Run inline closure tests**
+
+Run: `cargo test --lib body::tests::test_walk_body_descends -- --nocapture 2>&1`
+Expected: All 3 PASS.
+
+- [ ] **Step 4: Update the earlier nested-skip tests**
+
+The existing `test_walk_body_skips_nested_rust` test uses `let f = || bar();` — a stored closure. This should still be skipped. Verify it still passes:
+
+Run: `cargo test --lib body::tests::test_walk_body_skips -- --nocapture 2>&1`
+Expected: All 3 PASS (Rust, Python, TypeScript).
+
+- [ ] **Step 5: Update Rust golden snapshot test**
+
+The Rust golden test source uses `create(&db)`, `delete(&db)`, `list(&db)` as direct calls — no closures. No change needed. But update the Rust golden test's Err/Ok exclusion (from the previous amendment) at the same time if not already done.
+
+- [ ] **Step 6: Run full test suite**
+
+Run: `cargo test 2>&1`
+Expected: All pass.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/index/body.rs
+git commit -m "feat: descend into inline closures passed as call arguments"
+```
