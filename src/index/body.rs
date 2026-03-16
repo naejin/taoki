@@ -104,7 +104,7 @@ fn is_nested_definition(node: Node, lang: Language) -> bool {
             matches!(node.kind(), "function_declaration" | "arrow_function" | "function" | "class_declaration" | "class")
         }
         Language::Go => matches!(node.kind(), "func_literal" | "function_declaration"),
-        Language::Java => matches!(node.kind(), "method_declaration" | "lambda_expression" | "class_declaration" | "local_variable_declaration" | "anonymous_class_body"),
+        Language::Java => matches!(node.kind(), "method_declaration" | "lambda_expression" | "class_declaration" | "anonymous_class_body"),
     }
 }
 
@@ -1270,5 +1270,31 @@ fn example() -> Result<(), Error> {
         assert!(calls.contains(&"bar".to_string()));
         assert!(calls.contains(&"foo".to_string()));
         assert!(!calls.contains(&"Ok".to_string()), "Ok should be filtered as noise");
+    }
+
+    #[test]
+    fn test_extract_calls_java_local_variable_initializer() {
+        let src = r#"
+class Example {
+    void example() {
+        Foo x = make();
+        var y = validate(data);
+        process(x, y);
+    }
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Java);
+        let root = tree.root_node();
+        let class_node = root.child(0).unwrap();
+        let body = class_node.child_by_field_name("body").unwrap();
+        let mut cursor = body.walk();
+        let method = body.children(&mut cursor)
+            .find(|c| c.kind() == "method_declaration")
+            .unwrap();
+        let insights = analyze_body(method, &bytes, Language::Java);
+        let calls = &insights.calls;
+        assert!(calls.contains(&"make".to_string()), "should capture call in variable initializer");
+        assert!(calls.contains(&"validate".to_string()), "should capture call in var initializer");
+        assert!(calls.contains(&"process".to_string()));
     }
 }
