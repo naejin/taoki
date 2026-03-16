@@ -613,6 +613,84 @@ pub fn build_code_map(root: &Path, globs: &[String], detail_files: &[String]) ->
     Ok(out)
 }
 
+pub fn enrichment_status(root: &Path) -> Result<String, CodeMapError> {
+    let files = walk_files(root, &[])?;
+    let enrichments = load_enrichment_cache(root);
+
+    let root_hash = blake3::hash(
+        root.canonicalize()
+            .unwrap_or_else(|_| root.to_path_buf())
+            .to_string_lossy()
+            .as_bytes(),
+    )
+    .to_hex()
+    .to_string();
+
+    let mut stale_files: Vec<serde_json::Value> = Vec::new();
+    let mut fresh_count: usize = 0;
+    let mut seen_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for file_path in &files {
+        let rel = file_path
+            .strip_prefix(root)
+            .unwrap_or(file_path)
+            .to_string_lossy()
+            .replace('\\', "/");
+
+        if should_skip_path(&rel) {
+            continue;
+        }
+
+        seen_paths.insert(rel.clone());
+
+        let hash = match hash_file(file_path) {
+            Ok(h) => h,
+            Err(_) => continue,
+        };
+
+        match enrichments.get(&rel) {
+            Some(entry) if entry.hash == hash => {
+                fresh_count += 1;
+            }
+            Some(_) => {
+                stale_files.push(serde_json::json!({
+                    "path": rel,
+                    "hash": hash,
+                    "reason": "hash_mismatch"
+                }));
+            }
+            None => {
+                stale_files.push(serde_json::json!({
+                    "path": rel,
+                    "hash": hash,
+                    "reason": "missing"
+                }));
+            }
+        }
+    }
+
+    // Find orphaned entries
+    let orphaned: Vec<String> = enrichments
+        .keys()
+        .filter(|k| !seen_paths.contains(*k))
+        .cloned()
+        .collect();
+
+    let total_count = fresh_count + stale_files.len();
+    let is_stale = !stale_files.is_empty() || !orphaned.is_empty();
+
+    let result = serde_json::json!({
+        "stale": is_stale,
+        "repo_root_hash": root_hash,
+        "files": stale_files,
+        "orphaned": orphaned,
+        "fresh_count": fresh_count,
+        "total_count": total_count
+    });
+
+    Ok(serde_json::to_string(&result).unwrap())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1016,6 +1094,90 @@ mod tests {
         let result = build_code_map(dir.path(), &[], &["broken.rs".to_string()]).unwrap();
         assert!(result.contains("broken.rs"), "should list the file");
         assert!(!result.contains("[skeleton]"), "should have no skeleton for broken code:\n{result}");
+    }
+
+    #[test]
+    fn enrichment_status_provides_correct_hashes() {
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("lib.rs"), "pub fn x() {}\n").unwrap();
+
+        let actual_hash = hash_file(&dir.path().join("lib.rs")).unwrap();
+        let output = enrichment_status(dir.path()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+        let files = json["files"].as_array().unwrap();
+        assert_eq!(files[0]["hash"].as_str().unwrap(), actual_hash);
+    }
+
+    #[test]
+    fn enrichment_status_skips_filtered_paths() {
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("lib.rs"), "pub fn x() {}\n").unwrap();
+        let vendor_dir = dir.path().join("vendor");
+        fs::create_dir_all(&vendor_dir).unwrap();
+        fs::write(vendor_dir.join("dep.rs"), "pub fn y() {}\n").unwrap();
+
+        let output = enrichment_status(dir.path()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+
+        // vendor/dep.rs should not appear anywhere
+        let files = json["files"].as_array().unwrap();
+        assert!(!files.iter().any(|f| f["path"].as_str().unwrap().contains("vendor")));
+        assert_eq!(json["total_count"], 1); // only lib.rs
+    }
+
+    #[test]
+    fn enrichment_status_classifies_correctly() {
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create two source files
+        fs::write(dir.path().join("main.rs"), "fn main() {}\n").unwrap();
+        fs::write(dir.path().join("lib.rs"), "pub fn hello() {}\n").unwrap();
+
+        let main_hash = hash_file(&dir.path().join("main.rs")).unwrap();
+        let root_hash = blake3::hash(
+            dir.path().canonicalize().unwrap().to_string_lossy().as_bytes(),
+        ).to_hex().to_string();
+
+        // enriched.json: main.rs is fresh, lib.rs is missing, orphan.rs is orphaned
+        let cache_dir = dir.path().join(".cache/taoki");
+        fs::create_dir_all(&cache_dir).unwrap();
+        let enrichment = serde_json::json!({
+            "version": 1,
+            "model": "haiku",
+            "repo_root_hash": root_hash,
+            "files": {
+                "main.rs": { "hash": main_hash, "enrichment": "Entry point." },
+                "orphan.rs": { "hash": "dead", "enrichment": "Gone." }
+            }
+        });
+        fs::write(cache_dir.join("enriched.json"), serde_json::to_string(&enrichment).unwrap()).unwrap();
+
+        let output = enrichment_status(dir.path()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+
+        // lib.rs should be stale (missing)
+        let files = json["files"].as_array().unwrap();
+        assert!(files.iter().any(|f| f["path"] == "lib.rs" && f["reason"] == "missing"));
+
+        // main.rs should be fresh (not in stale list)
+        assert!(!files.iter().any(|f| f["path"] == "main.rs"));
+
+        // orphan.rs should be in orphaned list
+        let orphaned = json["orphaned"].as_array().unwrap();
+        assert!(orphaned.iter().any(|v| v == "orphan.rs"));
+
+        // stale should be true (has stale files + orphans)
+        assert_eq!(json["stale"], true);
+
+        // fresh_count and total_count
+        assert_eq!(json["fresh_count"], 1);
+        assert_eq!(json["total_count"], 2);
+
+        // repo_root_hash should be present
+        assert_eq!(json["repo_root_hash"].as_str().unwrap(), root_hash);
     }
 
     #[test]
