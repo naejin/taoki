@@ -68,6 +68,7 @@ jobs:
           cp -r commands staging/taoki/
           cp -r skills staging/taoki/
           cp -r hooks staging/taoki/
+          test -d agents && cp -r agents staging/taoki/ || true
           mkdir -p staging/taoki/scripts
           cp scripts/run.sh staging/taoki/scripts/
           cp scripts/run.cmd staging/taoki/scripts/
@@ -87,6 +88,7 @@ jobs:
           cp -r commands staging/taoki/
           cp -r skills staging/taoki/
           cp -r hooks staging/taoki/
+          test -d agents && cp -r agents staging/taoki/ || true
           mkdir -p staging/taoki/scripts
           cp scripts/run.sh staging/taoki/scripts/
           cp scripts/run.cmd staging/taoki/scripts/

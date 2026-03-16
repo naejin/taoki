@@ -32,9 +32,29 @@ struct CacheEntry {
     tags: Vec<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct EnrichmentCache {
+    #[serde(default)]
+    version: u32,
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    repo_root_hash: String,
+    #[serde(default)]
+    files: HashMap<String, EnrichmentEntry>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct EnrichmentEntry {
+    pub hash: String,
+    pub enrichment: String,
+}
+
 const CACHE_VERSION: u32 = 2;
 const CACHE_DIR: &str = ".cache/taoki";
 const CACHE_FILE: &str = "code-map.json";
+const ENRICHMENT_FILE: &str = "enriched.json";
+const ENRICHMENT_VERSION: u32 = 1;
 
 /// (path, lines, public_types, public_functions, tags, parse_error)
 type FileResult = (String, usize, Vec<String>, Vec<String>, Vec<String>, bool);
@@ -135,6 +155,55 @@ fn load_cache(root: &Path) -> Cache {
         let _ = f.unlock();
     }
     result
+}
+
+pub fn enrichment_cache_path(root: &Path) -> PathBuf {
+    root.join(CACHE_DIR).join(ENRICHMENT_FILE)
+}
+
+pub fn load_enrichment_cache(root: &Path) -> HashMap<String, EnrichmentEntry> {
+    let debug = std::env::var("TAOKI_DEBUG").is_ok();
+    let path = enrichment_cache_path(root);
+    let data = match std::fs::read_to_string(&path) {
+        Ok(d) => d,
+        Err(_) => return HashMap::new(),
+    };
+    let cache: EnrichmentCache = match serde_json::from_str(&data) {
+        Ok(c) => c,
+        Err(e) => {
+            if debug {
+                eprintln!("[taoki] enrichment cache parse error: {e}");
+            }
+            return HashMap::new();
+        }
+    };
+    if cache.version != ENRICHMENT_VERSION {
+        if debug {
+            eprintln!(
+                "[taoki] enrichment cache version mismatch: got {}, expected {}",
+                cache.version, ENRICHMENT_VERSION
+            );
+        }
+        return HashMap::new();
+    }
+    if debug && !cache.model.is_empty() {
+        eprintln!("[taoki] enrichment cache produced by model: {}", cache.model);
+    }
+    let root_hash = blake3::hash(
+        root.canonicalize()
+            .unwrap_or_else(|_| root.to_path_buf())
+            .to_string_lossy()
+            .as_bytes(),
+    )
+    .to_hex()
+    .to_string();
+    if !cache.repo_root_hash.is_empty() && cache.repo_root_hash != root_hash {
+        if debug {
+            eprintln!("[taoki] enrichment cache repo root hash mismatch: expected {root_hash}");
+        }
+        return HashMap::new();
+    }
+    cache.files
 }
 
 fn save_cache(root: &Path, cache: &Cache) {
@@ -327,6 +396,7 @@ fn compute_tags(
 pub fn build_code_map(root: &Path, globs: &[String]) -> Result<String, CodeMapError> {
     let files = walk_files(root, globs)?;
     let mut cache = load_cache(root);
+    let enrichments = load_enrichment_cache(root);
 
     // Invalidate cache if version changed
     if cache.version != CACHE_VERSION {
@@ -448,6 +518,16 @@ pub fn build_code_map(root: &Path, globs: &[String]) -> Result<String, CodeMapEr
         out.push_str(&format!(
             "- {path} ({lines} lines){tags_str} - public_types: {types_str} - public_functions: {fns_str}\n"
         ));
+        if let Some(enrich_entry) = enrichments.get(path) {
+            if let Some(cache_entry) = cache.files.get(path) {
+                if enrich_entry.hash == cache_entry.hash {
+                    out.push_str(&format!(
+                        "  [enriched] {}\n",
+                        enrich_entry.enrichment.replace('\n', " ")
+                    ));
+                }
+            }
+        }
     }
 
     Ok(out)
@@ -532,5 +612,130 @@ mod tests {
 
         let result = build_code_map(dir.path(), &[]).unwrap();
         assert!(result.contains("[error-types]"), "missing error-types tag in:\n{result}");
+    }
+
+    #[test]
+    fn loads_enrichment_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = dir.path().join(".cache/taoki");
+        fs::create_dir_all(&cache_dir).unwrap();
+
+        let root_hash = blake3::hash(
+            dir.path()
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .as_bytes(),
+        )
+        .to_hex()
+        .to_string();
+
+        let cache = serde_json::json!({
+            "version": 1,
+            "model": "haiku",
+            "repo_root_hash": root_hash,
+            "files": {
+                "src/main.rs": {
+                    "hash": "abc123",
+                    "enrichment": "Entry point for the application."
+                }
+            }
+        });
+        fs::write(
+            cache_dir.join("enriched.json"),
+            serde_json::to_string(&cache).unwrap(),
+        )
+        .unwrap();
+
+        let entries = load_enrichment_cache(dir.path());
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries["src/main.rs"].enrichment,
+            "Entry point for the application."
+        );
+    }
+
+    #[test]
+    fn enrichment_cache_wrong_version_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = dir.path().join(".cache/taoki");
+        fs::create_dir_all(&cache_dir).unwrap();
+
+        let cache = serde_json::json!({
+            "version": 999,
+            "model": "haiku",
+            "repo_root_hash": "",
+            "files": {
+                "src/main.rs": {
+                    "hash": "abc123",
+                    "enrichment": "Should be ignored."
+                }
+            }
+        });
+        fs::write(
+            cache_dir.join("enriched.json"),
+            serde_json::to_string(&cache).unwrap(),
+        )
+        .unwrap();
+
+        let entries = load_enrichment_cache(dir.path());
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn enrichment_cache_missing_file_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let entries = load_enrichment_cache(dir.path());
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn code_map_includes_enrichment() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("lib.rs");
+        fs::write(&file, "pub struct Foo {}\n").unwrap();
+
+        // First call to build the code-map cache and get the hash
+        let _ = build_code_map(dir.path(), &[]).unwrap();
+
+        // Read the code-map cache to get the hash
+        let cache_path = dir.path().join(".cache/taoki/code-map.json");
+        let cache_data: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&cache_path).unwrap()).unwrap();
+        let file_hash = cache_data["files"]["lib.rs"]["hash"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Write enrichment cache with matching hash
+        let root_hash = blake3::hash(
+            dir.path()
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .as_bytes(),
+        )
+        .to_hex()
+        .to_string();
+
+        let enrichment = serde_json::json!({
+            "version": 1,
+            "model": "haiku",
+            "repo_root_hash": root_hash,
+            "files": {
+                "lib.rs": {
+                    "hash": file_hash,
+                    "enrichment": "Library root module."
+                }
+            }
+        });
+        fs::write(
+            dir.path().join(".cache/taoki/enriched.json"),
+            serde_json::to_string(&enrichment).unwrap(),
+        )
+        .unwrap();
+
+        let result = build_code_map(dir.path(), &[]).unwrap();
+        assert!(result.contains("[enriched] Library root module."));
     }
 }
