@@ -355,8 +355,9 @@ fn extract_doc_line(&self, node: Node, source: &[u8]) -> Option<String> {
             }
             return None;
         }
-        // Skip non-doc siblings (whitespace, regular comments)
-        if p.kind() == "comment" || p.is_extra() {
+        // Only skip whitespace/extra nodes — stop on any non-doc node
+        // (including regular // comments) to avoid jumping across unrelated comments
+        if p.is_extra() {
             prev = p.prev_sibling();
             continue;
         }
@@ -366,7 +367,7 @@ fn extract_doc_line(&self, node: Node, source: &[u8]) -> Option<String> {
 }
 ```
 
-**Known limitation:** TS/JS decorators (`@decorator`) between a JSDoc comment and a declaration will cause the JSDoc to be missed, since decorators are neither `comment` nor `is_extra()` nodes. This matches current behavior (TS/JS `is_attr` returns `false`). Decorators rarely separate JSDoc from declarations in practice.
+**Known limitation:** TS/JS decorators (`@decorator`) between a JSDoc comment and a declaration will cause the JSDoc to be missed, since decorators are neither doc comments nor `is_extra()` nodes. This matches current behavior (TS/JS `is_attr` returns `false`). Decorators rarely separate JSDoc from declarations in practice.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -572,7 +573,9 @@ fn extract_doc_line(&self, node: Node, source: &[u8]) -> Option<String> {
             }
             return None;
         }
-        if p.kind() == "block_comment" || p.kind() == "line_comment" || p.is_extra() {
+        // Only skip whitespace/extra nodes — stop on any non-doc node
+        // (including regular // or /* comments) to avoid jumping across unrelated comments
+        if p.is_extra() {
             prev = p.prev_sibling();
             continue;
         }
@@ -657,9 +660,11 @@ In `src/index/languages/python.rs`, add to `LanguageExtractor for PythonExtracto
 ```rust
 fn extract_doc_line(&self, node: Node, source: &[u8]) -> Option<String> {
     // For decorated_definition, unwrap to inner definition
+    // Note: async def inside a decorator parses as "async_function_definition"
     let def_node = if node.kind() == "decorated_definition" {
         find_child(node, "function_definition")
-            .or_else(|| find_child(node, "class_definition"))?
+            .or_else(|| find_child(node, "class_definition"))
+            .or_else(|| find_child(node, "async_function_definition"))?
     } else {
         node
     };
@@ -752,6 +757,8 @@ fn doc_comment_truncated_at_120() {
 
 Run: `cargo test doc_comment_truncated_at_120 -- --nocapture 2>&1 | tail -20`
 Expected: PASS (truncation was already wired in via `truncate()` call in `extract_doc_line`).
+
+Note: `truncate(s, N)` guarantees output <= N chars. For input > N chars, it takes N-3 content chars + `...` = N total.
 
 - [ ] **Step 3: Bump cache version**
 
@@ -869,3 +876,11 @@ Expected: `///` doc lines appear in the skeleton output for documented items.
 - [ ] **Step 4: Final commit if any adjustments needed**
 
 If the smoke test reveals formatting issues, fix and commit.
+
+---
+
+## Recommendations and Fixups (all resolved)
+
+- ~~**TS/JS + Java doc association across intervening comments:**~~ Fixed — both overrides now only skip `is_extra()` nodes, stopping on any non-doc node including regular comments.
+- ~~**Python decorated async functions:**~~ Fixed — unwrap chain now includes `async_function_definition`.
+- ~~**Truncation test contract:**~~ Verified — `truncate(s, N)` guarantees <= N chars (N-3 content + `...`). Test assertion is correct. Contract note added.
