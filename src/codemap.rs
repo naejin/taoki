@@ -55,7 +55,6 @@ const CACHE_DIR: &str = ".cache/taoki";
 const CACHE_FILE: &str = "code-map.json";
 const ENRICHMENT_FILE: &str = "enriched.json";
 const ENRICHMENT_VERSION: u32 = 1;
-const ENRICHMENT_MODEL: &str = "haiku";
 
 /// (path, lines, public_types, public_functions, tags, parse_error)
 type FileResult = (String, usize, Vec<String>, Vec<String>, Vec<String>, bool);
@@ -163,6 +162,7 @@ pub fn enrichment_cache_path(root: &Path) -> PathBuf {
 }
 
 pub fn load_enrichment_cache(root: &Path) -> HashMap<String, EnrichmentEntry> {
+    let debug = std::env::var("TAOKI_DEBUG").is_ok();
     let path = enrichment_cache_path(root);
     let data = match std::fs::read_to_string(&path) {
         Ok(d) => d,
@@ -170,13 +170,24 @@ pub fn load_enrichment_cache(root: &Path) -> HashMap<String, EnrichmentEntry> {
     };
     let cache: EnrichmentCache = match serde_json::from_str(&data) {
         Ok(c) => c,
-        Err(_) => return HashMap::new(),
+        Err(e) => {
+            if debug {
+                eprintln!("[taoki] enrichment cache parse error: {e}");
+            }
+            return HashMap::new();
+        }
     };
     if cache.version != ENRICHMENT_VERSION {
+        if debug {
+            eprintln!(
+                "[taoki] enrichment cache version mismatch: got {}, expected {}",
+                cache.version, ENRICHMENT_VERSION
+            );
+        }
         return HashMap::new();
     }
-    if !cache.model.is_empty() && cache.model != ENRICHMENT_MODEL {
-        return HashMap::new();
+    if debug && !cache.model.is_empty() {
+        eprintln!("[taoki] enrichment cache produced by model: {}", cache.model);
     }
     let root_hash = blake3::hash(
         root.canonicalize()
@@ -187,6 +198,9 @@ pub fn load_enrichment_cache(root: &Path) -> HashMap<String, EnrichmentEntry> {
     .to_hex()
     .to_string();
     if !cache.repo_root_hash.is_empty() && cache.repo_root_hash != root_hash {
+        if debug {
+            eprintln!("[taoki] enrichment cache repo root hash mismatch: expected {root_hash}");
+        }
         return HashMap::new();
     }
     cache.files

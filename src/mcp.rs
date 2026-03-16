@@ -198,8 +198,19 @@ fn find_repo_root(path: &std::path::Path) -> Option<PathBuf> {
     } else {
         path.to_path_buf()
     };
+    let start = current.clone();
     loop {
         if current.join(".git").exists() {
+            return Some(current);
+        }
+        if !current.pop() {
+            break;
+        }
+    }
+    // Fallback: .cache/taoki/ directory (supports non-git workspaces)
+    current = start;
+    loop {
+        if current.join(".cache/taoki").is_dir() {
             return Some(current);
         }
         if !current.pop() {
@@ -291,11 +302,20 @@ fn call_index(args: &Value) -> ToolResult {
     let path_buf = path.to_path_buf();
 
     // Look up enrichment data
+    let debug = std::env::var("TAOKI_DEBUG").is_ok();
     let enrichment_text = find_repo_root(path).and_then(|root| {
         let enrichments = codemap::load_enrichment_cache(&root);
         let rel_path = path.strip_prefix(&root).ok()?;
         let rel_str = rel_path.to_string_lossy().replace('\\', "/");
-        let entry = enrichments.get(&*rel_str)?;
+        let entry = match enrichments.get(&*rel_str) {
+            Some(e) => e,
+            None => {
+                if debug {
+                    eprintln!("[taoki] no enrichment for {rel_str}");
+                }
+                return None;
+            }
+        };
         if entry.hash == hash {
             Some(entry.enrichment.clone())
         } else {

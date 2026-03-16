@@ -10,7 +10,14 @@ ROOT="$PWD"
 while [ ! -d "$ROOT/.git" ] && [ "$ROOT" != "/" ]; do
     ROOT="$(dirname "$ROOT")"
 done
-[ ! -d "$ROOT/.git" ] && exit 0
+# Fallback: look for .cache/taoki/ (supports non-git workspaces)
+if [ ! -d "$ROOT/.git" ]; then
+    ROOT="$PWD"
+    while [ ! -d "$ROOT/.cache/taoki" ] && [ "$ROOT" != "/" ]; do
+        ROOT="$(dirname "$ROOT")"
+    done
+    [ ! -d "$ROOT/.cache/taoki" ] && exit 0
+fi
 
 CACHE_DIR="$ROOT/.cache/taoki"
 CODE_MAP="$CACHE_DIR/code-map.json"
@@ -25,9 +32,11 @@ if [ ! -f "$ENRICHED" ]; then
     exit 0
 fi
 
-# Compare hash counts (heuristic)
-MAP_COUNT=$(grep -c '"hash":' "$CODE_MAP" 2>/dev/null || echo 0)
-ENRICHED_COUNT=$(grep -c '"hash":' "$ENRICHED" 2>/dev/null || echo 0)
+# Compare hash counts (heuristic). The pattern "hash": with literal quotes only
+# matches JSON keys — not string values, where quotes are escaped as \"hash\".
+# Uses flexible regex to handle both pretty-printed and compact JSON.
+MAP_COUNT=$(grep -Ec '"hash":[[:space:]]*"' "$CODE_MAP" 2>/dev/null || echo 0)
+ENRICHED_COUNT=$(grep -Ec '"hash":[[:space:]]*"' "$ENRICHED" 2>/dev/null || echo 0)
 
 if [ "$ENRICHED_COUNT" -lt "$MAP_COUNT" ]; then
     echo '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"Code intelligence enrichment is outdated. You MUST dispatch the taoki-enrich agent and wait for it to complete before taking any action on the user'"'"'s request. Do this by using the Agent tool with the taoki-enrich agent."}}'

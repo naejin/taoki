@@ -80,4 +80,4 @@ For each file, produce a single text block. The analysis must be **factual and i
 }
 ```
 
-Compute `repo_root_hash` by running: `echo -n "$(pwd)" | b3sum --no-names 2>/dev/null || echo ""`. If `b3sum` is not available (common on Windows), set `repo_root_hash` to an empty string `""`. The Rust reader accepts empty strings and skips the repo root validation in that case — this is safe because the cache lives inside the repo's `.cache/` directory, making cross-repo collisions unlikely.
+Compute `repo_root_hash` by running: `RPATH=$(realpath "$(pwd)" 2>/dev/null) && echo -n "$RPATH" | b3sum --no-names 2>/dev/null || echo ""`. The `realpath` resolves symlinks to match the Rust binary's `canonicalize()`. If either `realpath` or `b3sum` is unavailable, the command yields an empty string `""`. The Rust reader accepts empty strings and skips the repo root validation in that case — this is safe because the cache lives inside the repo's `.cache/` directory, making cross-repo collisions unlikely.
