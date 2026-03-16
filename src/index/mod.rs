@@ -1023,4 +1023,20 @@ def multiline_doc():
         has(&out, &["empty()"]);
         lacks(&out, &["///"]);
     }
+
+    #[test]
+    fn doc_comment_truncated_at_120() {
+        let long_doc = format!("/// {}", "a".repeat(130));
+        let src = format!("{long_doc}\npub fn long_doc() {{}}\n");
+        let out = idx(&src, Language::Rust);
+        assert!(out.contains("..."), "expected truncation in:\n{out}");
+        // The doc line in output should be <= 120 chars (excluding the "    /// " prefix)
+        for line in out.lines() {
+            if line.contains("/// ") && line.contains("...") {
+                let doc_content = line.trim().strip_prefix("/// ").unwrap();
+                assert!(doc_content.chars().count() <= 120,
+                    "doc too long ({} chars): {doc_content}", doc_content.chars().count());
+            }
+        }
+    }
 }
