@@ -251,6 +251,12 @@ impl LanguageExtractor for RustExtractor {
         matches!(node.kind(), "mod_item" | "function_item") && has_test_attr(attrs, source)
     }
 
+    fn strip_doc_prefix(&self, text: &str) -> Option<String> {
+        let stripped = text.strip_prefix("///").unwrap_or(text);
+        let trimmed = stripped.strip_prefix(' ').unwrap_or(stripped);
+        Some(trimmed.to_string())
+    }
+
     fn is_doc_comment(&self, node: Node, source: &[u8]) -> bool {
         if node.kind() != "line_comment" {
             return false;

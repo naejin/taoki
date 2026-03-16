@@ -360,6 +360,9 @@ pub(crate) fn format_skeleton(
                     entry.text,
                     line_range(entry.line_start, entry.line_end)
                 );
+                if let Some(ref doc) = entry.doc {
+                    let _ = writeln!(out, "    /// {doc}");
+                }
                 for child in &entry.children {
                     let _ = writeln!(out, "    {child}");
                 }
@@ -503,6 +506,7 @@ fn build_skeleton(root: Node, source: &[u8], extractor: &dyn LanguageExtractor, 
                 if let Some(doc_start) = doc_comment_start_line(child, source, extractor) {
                     entry.line_start = entry.line_start.min(doc_start);
                 }
+                entry.doc = extractor.extract_doc_line(child, source);
             }
             // Analyze body for top-level functions and Go methods (which use Section::Impl)
             let is_function = entry.section == Section::Function;
@@ -841,5 +845,26 @@ def process(data: list) -> dict:
             "fns:",
             "process(data: list) -> dict",
         ]);
+    }
+
+    #[test]
+    fn rust_doc_comment_extracted() {
+        let src = "\
+/// Fetches user from the database.
+pub fn fetch_user(id: &str) -> User { todo!() }
+
+/// Configuration for the service.
+pub struct Config {
+    pub host: String,
+}
+
+fn no_doc() {}
+";
+        let out = idx(src, Language::Rust);
+        has(&out, &[
+            "/// Fetches user from the database.",
+            "/// Configuration for the service.",
+        ]);
+        lacks(&out, &["/// no_doc"]);
     }
 }
