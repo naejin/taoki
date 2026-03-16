@@ -192,6 +192,7 @@ pub(crate) struct SkeletonEntry {
     pub(crate) children: Vec<String>,
     pub(crate) attrs: Vec<String>,
     pub(crate) insights: self::body::BodyInsights,
+    pub(crate) doc: Option<String>,
 }
 
 impl SkeletonEntry {
@@ -204,6 +205,7 @@ impl SkeletonEntry {
             children: Vec::new(),
             attrs: Vec::new(),
             insights: self::body::BodyInsights::default(),
+            doc: None,
         }
     }
 }
@@ -221,6 +223,42 @@ pub(crate) trait LanguageExtractor {
     fn extract_public_api(&self, root: Node, source: &[u8]) -> PublicApi;
     fn is_attr(&self, _node: Node) -> bool {
         false
+    }
+    /// Strip language-specific doc comment prefix from a single line.
+    /// Returns None if the line is empty after stripping.
+    fn strip_doc_prefix(&self, _text: &str) -> Option<String> {
+        None
+    }
+    /// Extract the first line of the doc comment for a node.
+    /// Default: walk backward through prev_sibling, collect doc comments,
+    /// reverse, take the first one, call strip_doc_prefix.
+    fn extract_doc_line(&self, node: Node, source: &[u8]) -> Option<String> {
+        let mut doc_nodes = Vec::new();
+        let mut prev = node.prev_sibling();
+        while let Some(p) = prev {
+            if self.is_attr(p) {
+                prev = p.prev_sibling();
+                continue;
+            }
+            if self.is_doc_comment(p, source) {
+                doc_nodes.push(p);
+                prev = p.prev_sibling();
+            } else {
+                break;
+            }
+        }
+        if doc_nodes.is_empty() {
+            return None;
+        }
+        // Backward walk finds topmost last — reverse to get first doc line
+        doc_nodes.reverse();
+        let text = node_text(doc_nodes[0], source);
+        let stripped = self.strip_doc_prefix(text)?;
+        let trimmed = stripped.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        Some(truncate(trimmed, 120))
     }
     fn collect_preceding_attrs<'a>(&self, node: Node<'a>) -> Vec<Node<'a>> {
         let mut attrs = Vec::new();
