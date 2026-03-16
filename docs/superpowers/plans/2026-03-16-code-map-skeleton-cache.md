@@ -233,7 +233,10 @@ Normalize `detail_files` at the top of the function:
 ```rust
 let detail_set: std::collections::HashSet<String> = detail_files
     .iter()
-    .map(|f| f.strip_prefix("./").unwrap_or(f).to_string())
+    .map(|f| {
+        let normalized = f.replace('\\', "/");
+        normalized.strip_prefix("./").unwrap_or(&normalized).to_string()
+    })
     .collect();
 ```
 
@@ -908,3 +911,4 @@ Verify:
 - `[enriched]` appears before `[skeleton]` if enrichment exists
 
 - [ ] **Step 4: Commit any final fixes if needed**
+
