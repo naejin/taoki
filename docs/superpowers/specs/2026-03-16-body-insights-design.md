@@ -95,6 +95,26 @@ impls:
 
 The `→` prefix distinguishes insight lines from structural children (method signatures, fields).
 
+### Output line glossary
+
+- **`→ calls:`** — Unique function/method names called directly in the body. Excludes calls inside nested functions/closures. Sorted lexicographically.
+- **`→ match:`** — Match/switch dispatch targets and their arm patterns, in source order. One line per match/switch expression.
+- **`→ errors:`** — Error construction sites (named errors first, e.g., `Err(CodeMapError::Io)`), followed by `N× ?` propagation count if nonzero. Source order for named errors.
+
+### Truncation constants (single source of truth)
+
+| Context | Max length | Applied to |
+|---------|-----------|------------|
+| `INSIGHT_CALL_TRUNCATE` | 40 chars | Individual callee names |
+| `INSIGHT_MATCH_TARGET_TRUNCATE` | 30 chars | Match/switch target expression |
+| `INSIGHT_ARM_TRUNCATE` | 30 chars | Individual match/switch arm pattern |
+| `INSIGHT_ERROR_TRUNCATE` | 40 chars | Individual error expression |
+| `MAX_CALLS` | 12 | Max unique calls shown |
+| `MAX_MATCH_ARMS` | 10 | Max arms per match/switch |
+| `MAX_ERRORS` | 8 | Max unique error sites shown |
+
+All constants defined in `body.rs`. All use `…` (Unicode ellipsis) appended after the limit.
+
 ## Extraction Logic
 
 ### Architecture
@@ -203,7 +223,7 @@ Each language represents function bodies differently:
 | Go | `function_declaration`, `method_declaration` | `body` field (yields `block`) |
 | Java | `method_declaration`, `constructor_declaration` | `body` field (yields `block`) |
 
-The `analyze_body()` function first extracts the body node via `child_by_field_name("body")`, then runs the three extractors on it.
+The `analyze_body()` function first extracts the body node via `child_by_field_name("body")`, then runs the three extractors on it. If the body field is absent (abstract methods, interface declarations, native methods), `analyze_body()` returns empty `BodyInsights` — no special-casing needed in callers.
 
 ## Edge cases
 
@@ -253,3 +273,7 @@ The `analyze_body()` function first extracts the body node via `child_by_field_n
 ## Testing strategy additions
 
 - One negative test per language confirming nested functions/closures do not leak calls, match arms, or errors into the parent function’s insights.
+
+## Testing strategy: golden snapshot tests
+
+Include one end-to-end golden snapshot test per language (in `body.rs` tests). Each test uses a multi-function source string that exercises all three insight types (calls, match/switch, errors) plus a nested function/closure. The test asserts the full formatted output of `analyze_body()` to lock formatting, indentation, and ordering.
