@@ -56,12 +56,14 @@ Taoki is distributed via pre-built binaries on GitHub Releases and install scrip
 
 ## Hooks
 
-Four hooks in `hooks/hooks.json` enforce Taoki tool usage:
+Six hooks in `hooks/hooks.json` enforce Taoki tool usage:
 
 - **SessionStart (tools reminder):** Injects a message at session start reminding Claude about the three code intelligence tools and when to use them.
 - **SessionStart (enrichment):** Runs `check-enrichment.sh` to detect stale LLM enrichment cache. If stale, directs Claude to dispatch the `taoki-enrich` agent before proceeding. Disabled via `TAOKI_NO_ENRICHMENT=1` env var.
-- **PreToolUse (Read):** When Claude is about to Read a source file (`.rs`, `.py`, `.ts`, `.js`, `.go`, `.java`, etc.), injects a nudge suggesting `mcp__taoki__index` first. Does not block — always allows the Read.
+- **PreToolUse (Read):** When Claude is about to Read a source file (`.rs`, `.py`, `.ts`, `.js`, `.go`, `.java`, etc.), injects a nudge suggesting `mcp__taoki__index` or `code_map(files=[...])` first. Does not block — always allows the Read.
 - **PreToolUse (Glob):** When Claude uses Glob, injects a tip about `mcp__taoki__code_map` as an alternative for structural exploration. Does not block.
+- **PreToolUse (Grep):** When Claude uses Grep, suggests `mcp__taoki__code_map` for structural exploration and `mcp__taoki__index` for file architecture. Does not block.
+- **PreToolUse (Agent):** When Claude dispatches a subagent for code-related work (general-purpose, Explore, Plan, feature-dev, code-reviewer), reminds to include Taoki MCP tool instructions in the subagent prompt. Does not block.
 
 All hooks use command type (shell scripts) for zero-latency, deterministic behavior. Hook scripts are in `hooks/`.
 

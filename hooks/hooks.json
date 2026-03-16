@@ -38,6 +38,24 @@
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/check-glob.sh"
           }
         ]
+      },
+      {
+        "matcher": "Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/check-grep.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/check-agent.sh"
+          }
+        ]
       }
     ]
   }

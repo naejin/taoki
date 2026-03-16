@@ -1,6 +1,6 @@
 ---
 name: taoki-workflow
-description: "Use BEFORE reading source files. Call code_map for repo overview, index for file structure with line numbers, dependencies for impact analysis. Saves 70-90% tokens vs reading full files."
+description: "Use when exploring a codebase, understanding code architecture, reviewing code, implementing features, fixing bugs, or before reading source files. Provides structural code intelligence: code_map for repo overview with tags, index for file skeletons with line numbers, dependencies for import/export graphs. Saves 70-90% tokens vs reading full files. Use this BEFORE Read, Glob, or Grep on source files."
 allowed-tools: mcp__taoki__code_map, mcp__taoki__index, mcp__taoki__dependencies
 ---
 
@@ -33,7 +33,9 @@ Call `mcp__taoki__dependencies` with the file you plan to modify and the repo ro
 
 ### 3. INDEX — Understand file architecture
 
-Call `mcp__taoki__index` on each file you need to understand. This returns the structural skeleton:
+**For multiple files:** Call `mcp__taoki__code_map` again with the `files` parameter — pass an array of relative paths to get full structural skeletons inline. This is faster than calling `index` on each file individually.
+
+**For a single file:** Call `mcp__taoki__index` on the file. This returns the structural skeleton:
 - Imports, types, function signatures, impl blocks — all with line numbers
 - 70-90% fewer tokens than reading the full file
 
@@ -58,5 +60,6 @@ With full structural understanding and dependency context, plan your changes and
 | Tool | Purpose | When |
 |------|---------|------|
 | `mcp__taoki__code_map` | Repo overview with file tags | First, always |
+| `mcp__taoki__code_map` with `files` | Full skeletons for multiple files | After identifying files of interest |
 | `mcp__taoki__dependencies` | Impact analysis | Before modifying any file |
-| `mcp__taoki__index` | File structure with line numbers | Before reading any source file |
+| `mcp__taoki__index` | Single file skeleton with line numbers | Before reading any source file |
