@@ -907,4 +907,29 @@ pub struct Thing {}
         // The output should contain the function but no doc line
         has(&out, &["pub blank_doc()"]);
     }
+
+    #[test]
+    fn ts_doc_comment_extracted() {
+        let src = "\
+/** Handles incoming requests. */
+export function handleRequest(req: Request): Response { return req; }
+
+/**
+ * Application configuration.
+ * Loaded from environment variables.
+ */
+export interface Config {
+    port: number;
+    host: string;
+}
+
+function undocumented() {}
+";
+        let out = idx(src, Language::TypeScript);
+        has(&out, &[
+            "/// Handles incoming requests.",
+            "/// Application configuration.",
+        ]);
+        lacks(&out, &["/// undocumented", "Loaded from"]);
+    }
 }
