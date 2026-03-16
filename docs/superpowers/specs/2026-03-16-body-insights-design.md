@@ -277,3 +277,17 @@ The `analyze_body()` function first extracts the body node via `child_by_field_n
 ## Testing strategy: golden snapshot tests
 
 Include one end-to-end golden snapshot test per language (in `body.rs` tests). Each test uses a multi-function source string that exercises all three insight types (calls, match/switch, errors) plus a nested function/closure. The test asserts the full formatted output of `analyze_body()` to lock formatting, indentation, and ordering.
+
+## Implementation notes (for plan/execution phase)
+
+- In `build_skeleton()`, only apply `analyze_body()` to entries where `entry.section == Section::Function` — this ensures the `child` AST node is the function declaration itself.
+- Reuse existing `truncate()` from `index/mod.rs` for insight string truncation (same Unicode ellipsis `…`).
+- Format `N× ?` via a dedicated helper within `BodyInsights` to keep rendering consistent.
+- Go error extraction (`errors.New`, `fmt.Errorf`) is found naturally by the recursive `walk_body` traversal regardless of parent context (return, if, assignment).
+
+## Additional test requirements
+
+- Unit test against pinned tree-sitter-rust 0.23 grammar verifying Rust `match_arm` pattern field access (or documenting the fallback).
+- Boundary condition test for each truncation constant.
+- Test per language verifying method insight lines appear immediately after the method signature in children.
+- Test verifying Go error calls are detected inside `if` and assignment contexts, not just direct `return`.
