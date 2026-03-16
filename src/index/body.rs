@@ -93,16 +93,18 @@ pub(crate) fn analyze_body(node: Node, source: &[u8], lang: Language) -> BodyIns
 
 // --- Body walker ---
 
-/// Check if a node is a function/closure definition that should not be descended into.
-fn is_nested_function_def(node: Node, lang: Language) -> bool {
+/// Check if a node is a nested definition that should not be descended into.
+/// This includes functions, closures, and class/object definitions to prevent
+/// insights from leaking out of nested scopes.
+fn is_nested_definition(node: Node, lang: Language) -> bool {
     match lang {
         Language::Rust => matches!(node.kind(), "function_item" | "closure_expression"),
-        Language::Python => matches!(node.kind(), "function_definition" | "lambda"),
+        Language::Python => matches!(node.kind(), "function_definition" | "lambda" | "class_definition"),
         Language::TypeScript | Language::JavaScript => {
-            matches!(node.kind(), "function_declaration" | "arrow_function" | "function")
+            matches!(node.kind(), "function_declaration" | "arrow_function" | "function" | "class_declaration" | "class")
         }
         Language::Go => matches!(node.kind(), "func_literal" | "function_declaration"),
-        Language::Java => matches!(node.kind(), "method_declaration" | "lambda_expression"),
+        Language::Java => matches!(node.kind(), "method_declaration" | "lambda_expression" | "class_declaration" | "local_variable_declaration" | "anonymous_class_body"),
     }
 }
 
@@ -111,7 +113,7 @@ fn is_nested_function_def(node: Node, lang: Language) -> bool {
 fn walk_body(node: Node, lang: Language, visitor: &mut impl FnMut(Node)) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if is_nested_function_def(child, lang) {
+        if is_nested_definition(child, lang) {
             continue;
         }
         visitor(child);
@@ -185,13 +187,23 @@ fn is_call_node(node: Node, lang: Language) -> bool {
     }
 }
 
+/// Names to exclude from call lists per language (noise that duplicates other insights).
+fn is_noise_call(name: &str, lang: Language) -> bool {
+    match lang {
+        Language::Rust => matches!(name, "Ok" | "Err" | "Some" | "None"),
+        _ => false,
+    }
+}
+
 fn extract_calls(body: Node, source: &[u8], lang: Language) -> Vec<String> {
     let mut seen = std::collections::BTreeSet::new();
     walk_body(body, lang, &mut |node| {
         if is_call_node(node, lang) {
             if let Some(name) = extract_callee_name(node, source, lang) {
-                let truncated = truncate(name, INSIGHT_CALL_TRUNCATE);
-                seen.insert(truncated);
+                if !is_noise_call(name, lang) {
+                    let truncated = truncate(name, INSIGHT_CALL_TRUNCATE);
+                    seen.insert(truncated);
+                }
             }
         }
     });
@@ -350,20 +362,40 @@ fn extract_java_switch(node: Node, source: &[u8]) -> Option<MatchInsight> {
     let mut arms = Vec::new();
     let mut cursor = body.walk();
     for child in body.children(&mut cursor) {
-        if child.kind() == "switch_block_statement_group" {
-            let mut label_cursor = child.walk();
-            for label_child in child.children(&mut label_cursor) {
-                if label_child.kind() == "switch_label" {
-                    let text = node_text(label_child, source).trim();
-                    let cleaned = text.strip_prefix("case ").unwrap_or(text);
-                    let cleaned = cleaned.strip_suffix(':').unwrap_or(cleaned);
-                    if cleaned == "default" || text.starts_with("default") {
-                        arms.push("default".to_string());
-                    } else {
-                        arms.push(truncate(cleaned.trim(), INSIGHT_ARM_TRUNCATE));
+        match child.kind() {
+            // Traditional colon-style: case X: ...
+            "switch_block_statement_group" => {
+                let mut label_cursor = child.walk();
+                for label_child in child.children(&mut label_cursor) {
+                    if label_child.kind() == "switch_label" {
+                        let text = node_text(label_child, source).trim();
+                        let cleaned = text.strip_prefix("case ").unwrap_or(text);
+                        let cleaned = cleaned.strip_suffix(':').unwrap_or(cleaned);
+                        if cleaned == "default" || text.starts_with("default") {
+                            arms.push("default".to_string());
+                        } else {
+                            arms.push(truncate(cleaned.trim(), INSIGHT_ARM_TRUNCATE));
+                        }
                     }
                 }
             }
+            // Arrow-style: case X -> ...
+            "switch_rule" => {
+                let mut label_cursor = child.walk();
+                for label_child in child.children(&mut label_cursor) {
+                    if label_child.kind() == "switch_label" {
+                        let text = node_text(label_child, source).trim();
+                        let cleaned = text.strip_prefix("case ").unwrap_or(text);
+                        let cleaned = cleaned.strip_suffix(':').unwrap_or(cleaned);
+                        if cleaned == "default" || text.starts_with("default") {
+                            arms.push("default".to_string());
+                        } else {
+                            arms.push(truncate(cleaned.trim(), INSIGHT_ARM_TRUNCATE));
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
     }
     Some(MatchInsight { target, arms })
@@ -402,11 +434,14 @@ fn extract_error_returns(body: Node, source: &[u8], lang: Language) -> (Vec<Stri
                     }
                 }
                 // Macro invocations: bail!, anyhow!, panic!, todo!, unimplemented!
+                // Also handles namespaced variants like anyhow::bail!
                 if node.kind() == "macro_invocation" {
                     if let Some(mac) = node.child(0) {
-                        let name = node_text(mac, source);
-                        if matches!(name, "bail" | "anyhow" | "panic" | "todo" | "unimplemented") {
-                            let text = format!("{name}!");
+                        let full_name = node_text(mac, source);
+                        // Extract the leaf name for matching (e.g. "anyhow::bail" -> "bail")
+                        let leaf = full_name.rsplit("::").next().unwrap_or(full_name);
+                        if matches!(leaf, "bail" | "anyhow" | "panic" | "todo" | "unimplemented") {
+                            let text = format!("{full_name}!");
                             if seen.insert(text.clone()) {
                                 errors.push(text);
                             }
@@ -969,7 +1004,7 @@ fn handler(cmd: &str) -> Result<(), AppError> {
         let insights = analyze_body(fn_node, &bytes, Language::Rust);
         let lines = insights.format_lines();
         assert_eq!(lines, vec![
-            "→ calls: Err, Ok, connect, create, delete, list, load_config",
+            "→ calls: connect, create, delete, list, load_config",
             "→ match: cmd → \"create\", \"delete\", \"list\", _",
             "→ errors: AppError::UnknownCommand, 2× ?",
         ]);
@@ -1095,5 +1130,145 @@ class Handler {
             "→ match: cmd → \"start\", \"stop\", default",
             "→ errors: IllegalArgumentException",
         ]);
+    }
+
+    // --- Nested class/object skipping tests ---
+
+    #[test]
+    fn test_walk_body_skips_nested_class_python() {
+        let src = r#"
+def outer():
+    foo()
+    class Inner:
+        def method(self):
+            bar()
+    baz()
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Python);
+        let root = tree.root_node();
+        let fn_node = root.child(0).unwrap();
+        let insights = analyze_body(fn_node, &bytes, Language::Python);
+        let calls = &insights.calls;
+        assert!(calls.contains(&"foo".to_string()));
+        assert!(calls.contains(&"baz".to_string()));
+        assert!(!calls.contains(&"bar".to_string()), "should not include calls from nested class");
+    }
+
+    #[test]
+    fn test_walk_body_skips_nested_class_typescript() {
+        let src = r#"
+function outer() {
+    foo();
+    class Inner {
+        method() { bar(); }
+    }
+    baz();
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::TypeScript);
+        let root = tree.root_node();
+        let fn_node = root.child(0).unwrap();
+        let insights = analyze_body(fn_node, &bytes, Language::TypeScript);
+        let calls = &insights.calls;
+        assert!(calls.contains(&"foo".to_string()));
+        assert!(calls.contains(&"baz".to_string()));
+        assert!(!calls.contains(&"bar".to_string()), "should not include calls from nested class");
+    }
+
+    #[test]
+    fn test_walk_body_skips_nested_class_java() {
+        let src = r#"
+class Outer {
+    void outer() {
+        foo();
+        class Inner {
+            void method() { bar(); }
+        }
+        baz();
+    }
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Java);
+        let root = tree.root_node();
+        let class_node = root.child(0).unwrap();
+        let body = class_node.child_by_field_name("body").unwrap();
+        let mut cursor = body.walk();
+        let method = body.children(&mut cursor)
+            .find(|c| c.kind() == "method_declaration")
+            .unwrap();
+        let insights = analyze_body(method, &bytes, Language::Java);
+        let calls = &insights.calls;
+        assert!(calls.contains(&"foo".to_string()));
+        assert!(calls.contains(&"baz".to_string()));
+        assert!(!calls.contains(&"bar".to_string()), "should not include calls from nested class");
+    }
+
+    // --- Java arrow-style switch test ---
+
+    #[test]
+    fn test_extract_match_java_arrow_style() {
+        let src = r#"
+class Example {
+    String example(int x) {
+        return switch (x) {
+            case 1 -> "one";
+            case 2 -> "two";
+            default -> "other";
+        };
+    }
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Java);
+        let root = tree.root_node();
+        let class_node = root.child(0).unwrap();
+        let body = class_node.child_by_field_name("body").unwrap();
+        let mut cursor = body.walk();
+        let method = body.children(&mut cursor)
+            .find(|c| c.kind() == "method_declaration")
+            .unwrap();
+        let insights = analyze_body(method, &bytes, Language::Java);
+        assert!(!insights.match_arms.is_empty(), "should extract arrow-style switch arms");
+        let m = &insights.match_arms[0];
+        assert_eq!(m.target, "x");
+        assert_eq!(m.arms, vec!["1", "2", "default"]);
+    }
+
+    // --- Rust namespaced macro test ---
+
+    #[test]
+    fn test_extract_errors_rust_namespaced_macros() {
+        let src = r#"
+fn example() -> Result<()> {
+    anyhow::bail!("something went wrong");
+    tracing::error!("not an error return");
+    Ok(())
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Rust);
+        let root = tree.root_node();
+        let fn_node = root.child(0).unwrap();
+        let body = fn_node.child_by_field_name("body").unwrap();
+        let (errors, _) = extract_error_returns(body, &bytes, Language::Rust);
+        assert_eq!(errors, vec!["anyhow::bail!"]);
+    }
+
+    // --- Rust noise call filtering test ---
+
+    #[test]
+    fn test_extract_calls_rust_filters_noise() {
+        let src = r#"
+fn example() -> Result<(), Error> {
+    let x = foo()?;
+    Ok(bar())
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Rust);
+        let root = tree.root_node();
+        let fn_node = root.child(0).unwrap();
+        let body = fn_node.child_by_field_name("body").unwrap();
+        let calls = extract_calls(body, &bytes, Language::Rust);
+        assert!(calls.contains(&"bar".to_string()));
+        assert!(calls.contains(&"foo".to_string()));
+        assert!(!calls.contains(&"Ok".to_string()), "Ok should be filtered as noise");
     }
 }
