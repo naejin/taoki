@@ -252,6 +252,56 @@ impl LanguageExtractor for PythonExtractor {
         false
     }
 
+    fn extract_doc_line(&self, node: Node, source: &[u8]) -> Option<String> {
+        // For decorated_definition, unwrap to inner definition
+        let def_node = if node.kind() == "decorated_definition" {
+            find_child(node, "function_definition")
+                .or_else(|| find_child(node, "class_definition"))
+                .or_else(|| find_child(node, "async_function_definition"))?
+        } else {
+            node
+        };
+
+        // Find the body block
+        let body = def_node.child_by_field_name("body")?;
+
+        // First child of body should be expression_statement > string
+        let mut cursor = body.walk();
+        let first_child = body.children(&mut cursor).next()?;
+        if first_child.kind() != "expression_statement" {
+            return None;
+        }
+        let string_node = first_child.child(0)?;
+        if string_node.kind() != "string" {
+            return None;
+        }
+
+        let text = node_text(string_node, source);
+        // Strip optional string prefix (r, u, b, etc.) and triple-quote markers
+        let after_prefix = text
+            .strip_prefix("r\"\"\"")
+            .or_else(|| text.strip_prefix("u\"\"\""))
+            .or_else(|| text.strip_prefix("b\"\"\""))
+            .or_else(|| text.strip_prefix("\"\"\""))
+            .or_else(|| text.strip_prefix("r'''"))
+            .or_else(|| text.strip_prefix("u'''"))
+            .or_else(|| text.strip_prefix("b'''"))
+            .or_else(|| text.strip_prefix("'''"))?;
+        let inner = after_prefix
+            .strip_suffix("\"\"\"")
+            .or_else(|| after_prefix.strip_suffix("'''"))
+            .unwrap_or(after_prefix);
+
+        // Find first non-empty line
+        for line in inner.lines() {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                return Some(truncate(trimmed, 120));
+            }
+        }
+        None
+    }
+
     fn is_module_doc(&self, node: Node, source: &[u8]) -> bool {
         if node.kind() != "expression_statement" {
             return false;

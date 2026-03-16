@@ -192,6 +192,7 @@ pub(crate) struct SkeletonEntry {
     pub(crate) children: Vec<String>,
     pub(crate) attrs: Vec<String>,
     pub(crate) insights: self::body::BodyInsights,
+    pub(crate) doc: Option<String>,
 }
 
 impl SkeletonEntry {
@@ -204,6 +205,7 @@ impl SkeletonEntry {
             children: Vec::new(),
             attrs: Vec::new(),
             insights: self::body::BodyInsights::default(),
+            doc: None,
         }
     }
 }
@@ -221,6 +223,42 @@ pub(crate) trait LanguageExtractor {
     fn extract_public_api(&self, root: Node, source: &[u8]) -> PublicApi;
     fn is_attr(&self, _node: Node) -> bool {
         false
+    }
+    /// Strip language-specific doc comment prefix from a single line.
+    /// Returns None if the line is empty after stripping.
+    fn strip_doc_prefix(&self, _text: &str) -> Option<String> {
+        None
+    }
+    /// Extract the first line of the doc comment for a node.
+    /// Default: walk backward through prev_sibling, collect doc comments,
+    /// reverse, take the first one, call strip_doc_prefix.
+    fn extract_doc_line(&self, node: Node, source: &[u8]) -> Option<String> {
+        let mut doc_nodes = Vec::new();
+        let mut prev = node.prev_sibling();
+        while let Some(p) = prev {
+            if self.is_attr(p) {
+                prev = p.prev_sibling();
+                continue;
+            }
+            if self.is_doc_comment(p, source) {
+                doc_nodes.push(p);
+                prev = p.prev_sibling();
+            } else {
+                break;
+            }
+        }
+        if doc_nodes.is_empty() {
+            return None;
+        }
+        // Backward walk finds topmost last — reverse to get first doc line
+        doc_nodes.reverse();
+        let text = node_text(doc_nodes[0], source);
+        let stripped = self.strip_doc_prefix(text)?;
+        let trimmed = stripped.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        Some(truncate(trimmed, 120))
     }
     fn collect_preceding_attrs<'a>(&self, node: Node<'a>) -> Vec<Node<'a>> {
         let mut attrs = Vec::new();
@@ -322,6 +360,9 @@ pub(crate) fn format_skeleton(
                     entry.text,
                     line_range(entry.line_start, entry.line_end)
                 );
+                if let Some(ref doc) = entry.doc {
+                    let _ = writeln!(out, "    /// {doc}");
+                }
                 for child in &entry.children {
                     let _ = writeln!(out, "    {child}");
                 }
@@ -465,6 +506,7 @@ fn build_skeleton(root: Node, source: &[u8], extractor: &dyn LanguageExtractor, 
                 if let Some(doc_start) = doc_comment_start_line(child, source, extractor) {
                     entry.line_start = entry.line_start.min(doc_start);
                 }
+                entry.doc = extractor.extract_doc_line(child, source);
             }
             // Analyze body for top-level functions and Go methods (which use Section::Impl)
             let is_function = entry.section == Section::Function;
@@ -574,6 +616,7 @@ impl Config {
     pub fn new(name: String) -> Self { todo!() }
 }
 
+/// Process the input string.
 pub fn process(input: &str) -> Result<String, Error> { todo!() }
 
 pub mod utils;
@@ -598,6 +641,7 @@ macro_rules! my_macro { () => {}; }
             "Config",
             "fns:",
             "pub process(input: &str)",
+            "/// Process the input string.",
             "mod:",
             "pub utils",
             "macros:",
@@ -633,6 +677,7 @@ export class Service {
     process(input: string): string { return input; }
 }
 
+/** The main handler. */
 export function handler(req: Request): Response { return new Response(); }
 ";
         let out = idx(src, Language::TypeScript);
@@ -649,6 +694,7 @@ export function handler(req: Request): Response { return new Response(); }
             "export Service",
             "fns:",
             "export handler(req: Request)",
+            "/// The main handler.",
         ]);
     }
 
@@ -803,5 +849,257 @@ def process(data: list) -> dict:
             "fns:",
             "process(data: list) -> dict",
         ]);
+    }
+
+    #[test]
+    fn rust_doc_comment_extracted() {
+        let src = "\
+/// Fetches user from the database.
+pub fn fetch_user(id: &str) -> User { todo!() }
+
+/// Configuration for the service.
+pub struct Config {
+    pub host: String,
+}
+
+fn no_doc() {}
+";
+        let out = idx(src, Language::Rust);
+        has(&out, &[
+            "/// Fetches user from the database.",
+            "/// Configuration for the service.",
+        ]);
+        lacks(&out, &["/// no_doc"]);
+    }
+
+    #[test]
+    fn rust_doc_multiline_takes_first() {
+        let src = "\
+/// Summary line here.
+/// More details on second line.
+/// Even more details.
+pub fn documented() {}
+";
+        let out = idx(src, Language::Rust);
+        has(&out, &["/// Summary line here."]);
+        lacks(&out, &["More details", "Even more"]);
+    }
+
+    #[test]
+    fn rust_doc_with_attrs() {
+        let src = "\
+/// Does the thing.
+#[derive(Debug)]
+pub struct Thing {}
+";
+        let out = idx(src, Language::Rust);
+        has(&out, &["/// Does the thing."]);
+    }
+
+    #[test]
+    fn rust_no_doc_no_line() {
+        let src = "pub fn bare() {}\n";
+        let out = idx(src, Language::Rust);
+        lacks(&out, &["///"]);
+    }
+
+    #[test]
+    fn rust_empty_doc_comment_ignored() {
+        let src = "///\n///   \npub fn blank_doc() {}\n";
+        let out = idx(src, Language::Rust);
+        lacks(&out, &["/// \n"]);
+        // The output should contain the function but no doc line
+        has(&out, &["pub blank_doc()"]);
+    }
+
+    #[test]
+    fn rust_block_doc_comment_ignored() {
+        // Rust /** */ block doc comments are intentionally not extracted.
+        // They are extremely rare in practice (/// is the overwhelming convention)
+        // and is_doc_comment only matches line_comment nodes, not block_comment.
+        let src = "/** Block doc. */\npub fn block_doc() {}\n";
+        let out = idx(src, Language::Rust);
+        has(&out, &["pub block_doc()"]);
+        lacks(&out, &["/// Block doc"]);
+    }
+
+    #[test]
+    fn ts_doc_comment_extracted() {
+        let src = "\
+/** Handles incoming requests. */
+export function handleRequest(req: Request): Response { return req; }
+
+/**
+ * Application configuration.
+ * Loaded from environment variables.
+ */
+export interface Config {
+    port: number;
+    host: string;
+}
+
+function undocumented() {}
+";
+        let out = idx(src, Language::TypeScript);
+        has(&out, &[
+            "/// Handles incoming requests.",
+            "/// Application configuration.",
+        ]);
+        lacks(&out, &["/// undocumented", "Loaded from"]);
+    }
+
+    #[test]
+    fn ts_line_comment_blocks_doc_attribution() {
+        let src = "\
+/** Doc for something else. */
+function foo() {}
+// unrelated comment
+export function bar() {}
+";
+        let out = idx(src, Language::TypeScript);
+        has(&out, &["/// Doc for something else."]);
+        // bar must NOT get foo's doc — the // comment is a barrier
+        lacks(&out, &["bar\n        /// Doc"]);
+    }
+
+    #[test]
+    fn go_doc_comment_extracted() {
+        let src = "\
+package main
+
+// FetchUser retrieves a user by ID.
+func FetchUser(id string) (*User, error) { return nil, nil }
+
+// Config holds application settings.
+type Config struct {
+    Host string
+    Port int
+}
+
+// not adjacent — blank line separates
+
+func Bare() {}
+";
+        let out = idx(src, Language::Go);
+        has(&out, &[
+            "/// FetchUser retrieves a user by ID.",
+            "/// Config holds application settings.",
+        ]);
+        lacks(&out, &["/// not adjacent", "/// Bare"]);
+    }
+
+    #[test]
+    fn java_doc_comment_extracted() {
+        let src = "\
+package com.example;
+
+/** Handles user operations. */
+public class UserService {
+    public void doStuff() {}
+}
+
+/**
+ * Represents a user in the system.
+ * Contains identity and role information.
+ */
+public record User(String name, String role) {}
+
+public class Bare {}
+";
+        let out = idx(src, Language::Java);
+        has(&out, &[
+            "/// Handles user operations.",
+            "/// Represents a user in the system.",
+        ]);
+        lacks(&out, &["/// Bare", "Contains identity"]);
+    }
+
+    #[test]
+    fn java_line_comment_blocks_doc_attribution() {
+        let src = "\
+package com.example;
+
+/** Doc for SomeOtherClass. */
+class SomeOtherClass {}
+// TODO: remove this
+public class MyClass {}
+";
+        let out = idx(src, Language::Java);
+        has(&out, &["/// Doc for SomeOtherClass."]);
+        // MyClass must NOT get SomeOtherClass's doc
+        lacks(&out, &["MyClass\n        /// Doc"]);
+    }
+
+    #[test]
+    fn python_raw_and_single_quote_docstrings() {
+        let src = r#"
+def raw_doc():
+    r"""Raw docstring content."""
+    pass
+
+def single_quote_doc():
+    '''Single-quoted docstring.'''
+    pass
+"#;
+        let out = idx(src, Language::Python);
+        has(&out, &[
+            "/// Raw docstring content.",
+            "/// Single-quoted docstring.",
+        ]);
+    }
+
+    #[test]
+    fn python_doc_comment_extracted() {
+        let src = r#"
+def fetch_user(user_id: str) -> User:
+    """Fetch a user from the database."""
+    pass
+
+class Config:
+    """Application configuration."""
+    host: str
+    port: int
+
+def bare():
+    pass
+
+def multiline_doc():
+    """
+    Summary on second line.
+    More details here.
+    """
+    pass
+"#;
+        let out = idx(src, Language::Python);
+        has(&out, &[
+            "/// Fetch a user from the database.",
+            "/// Application configuration.",
+            "/// Summary on second line.",
+        ]);
+        lacks(&out, &["/// bare", "More details"]);
+    }
+
+    #[test]
+    fn python_empty_docstring_ignored() {
+        let src = "def empty():\n    \"\"\"   \"\"\"\n    pass\n";
+        let out = idx(src, Language::Python);
+        has(&out, &["empty()"]);
+        lacks(&out, &["///"]);
+    }
+
+    #[test]
+    fn doc_comment_truncated_at_120() {
+        let long_doc = format!("/// {}", "a".repeat(130));
+        let src = format!("{long_doc}\npub fn long_doc() {{}}\n");
+        let out = idx(&src, Language::Rust);
+        assert!(out.contains("..."), "expected truncation in:\n{out}");
+        // The doc line in output should be <= 120 chars (excluding the "    /// " prefix)
+        for line in out.lines() {
+            if line.contains("/// ") && line.contains("...") {
+                let doc_content = line.trim().strip_prefix("/// ").unwrap();
+                assert!(doc_content.chars().count() <= 120,
+                    "doc too long ({} chars): {doc_content}", doc_content.chars().count());
+            }
+        }
     }
 }

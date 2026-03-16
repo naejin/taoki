@@ -243,6 +243,48 @@ impl LanguageExtractor for GoExtractor {
         node.kind() == "comment"
     }
 
+    fn strip_doc_prefix(&self, text: &str) -> Option<String> {
+        let stripped = text.strip_prefix("//").unwrap_or(text);
+        let trimmed = stripped.strip_prefix(' ').unwrap_or(stripped);
+        if trimmed.is_empty() { return None; }
+        Some(trimmed.to_string())
+    }
+
+    /// Go uniquely needs an adjacency check because is_doc_comment matches ALL
+    /// comment nodes (both // and /* */). Other languages (Rust, TS/JS, Java) only
+    /// match doc-specific syntax (///, /**) so stray comments can't leak through.
+    /// In Go, a blank line between a comment and a declaration means it's not a doc comment.
+    fn extract_doc_line(&self, node: Node, source: &[u8]) -> Option<String> {
+        let item_start_row = node.start_position().row;
+        let mut doc_nodes = Vec::new();
+        let mut prev = node.prev_sibling();
+        while let Some(p) = prev {
+            if p.kind() != "comment" {
+                break;
+            }
+            let text = node_text(p, source);
+            // Only line comments (//), not block comments (/* */)
+            if !text.starts_with("//") {
+                break;
+            }
+            doc_nodes.push(p);
+            prev = p.prev_sibling();
+        }
+        if doc_nodes.is_empty() {
+            return None;
+        }
+        // Check adjacency: closest comment must be on the line directly before the item
+        let closest = doc_nodes[0];
+        if closest.end_position().row + 1 < item_start_row {
+            return None; // blank line gap — not a doc comment
+        }
+        // First doc line is last in our backward-collected vec
+        doc_nodes.reverse();
+        let text = node_text(doc_nodes[0], source);
+        let stripped = self.strip_doc_prefix(text)?;
+        Some(truncate(&stripped, 120))
+    }
+
     fn is_module_doc(&self, _node: Node, _source: &[u8]) -> bool {
         false
     }

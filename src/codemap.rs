@@ -52,7 +52,7 @@ pub struct EnrichmentEntry {
     pub enrichment: String,
 }
 
-const CACHE_VERSION: u32 = 3;
+const CACHE_VERSION: u32 = 4;
 const CACHE_DIR: &str = ".cache/taoki";
 const CACHE_FILE: &str = "code-map.json";
 const ENRICHMENT_FILE: &str = "enriched.json";
@@ -956,7 +956,7 @@ mod tests {
         assert!(result.contains("[skeleton]"), "should rebuild cache and produce skeleton:\n{result}");
         let cache_data: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(cache_dir.join("code-map.json")).unwrap()).unwrap();
-        assert_eq!(cache_data["version"], 3);
+        assert_eq!(cache_data["version"], CACHE_VERSION);
     }
 
     #[test]
