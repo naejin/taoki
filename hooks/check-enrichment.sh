@@ -16,6 +16,7 @@ if [ ! -d "$ROOT/.git" ]; then
     while [ ! -d "$ROOT/.cache/taoki" ] && [ "$ROOT" != "/" ]; do
         ROOT="$(dirname "$ROOT")"
     done
+    [ ! -d "$ROOT/.cache/taoki" ] && exit 0
 fi
 
 # Use taoki binary for definitive staleness check

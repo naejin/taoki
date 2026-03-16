@@ -642,11 +642,18 @@ pub fn check_enrichment(root: &Path) -> Result<String, CodeMapError> {
 
     let enrichments = load_enrichment_cache(root);
 
-    // Quick count check: if enrichment has fewer files than source, stale
-    let enriched_count = enrichments.len();
-    let source_count = source_files.len();
-    if enriched_count < source_count {
-        let missing = source_count - enriched_count;
+    // Full presence check (cheap — HashMap lookup per file, no I/O)
+    let mut missing = 0usize;
+    let mut present_files: Vec<&(String, PathBuf)> = Vec::new();
+    for sf in &source_files {
+        if enrichments.contains_key(&sf.0) {
+            present_files.push(sf);
+        } else {
+            missing += 1;
+        }
+    }
+
+    if missing > 0 {
         let result = serde_json::json!({
             "stale": true,
             "reason": format!("{missing} files missing from enrichment cache")
@@ -654,20 +661,22 @@ pub fn check_enrichment(root: &Path) -> Result<String, CodeMapError> {
         return Ok(serde_json::to_string(&result).unwrap());
     }
 
-    // Sample up to N files for hash comparison
+    // Sample up to N present files for hash comparison
     let cache = load_cache(root);
     let priority_tags = ["entry-point", "module-root"];
 
-    let mut priority_files: Vec<&(String, PathBuf)> = source_files.iter()
+    let mut priority_files: Vec<&(String, PathBuf)> = present_files.iter()
         .filter(|(rel, _)| {
             cache.files.get(rel)
                 .map(|c| c.tags.iter().any(|t| priority_tags.contains(&t.as_str())))
                 .unwrap_or(false)
         })
+        .copied()
         .collect();
 
-    let mut other_files: Vec<&(String, PathBuf)> = source_files.iter()
+    let mut other_files: Vec<&(String, PathBuf)> = present_files.iter()
         .filter(|f| !priority_files.contains(f))
+        .copied()
         .collect();
 
     let mut sample: Vec<&(String, PathBuf)> = Vec::new();
@@ -675,7 +684,6 @@ pub fn check_enrichment(root: &Path) -> Result<String, CodeMapError> {
     sample.append(&mut other_files);
     sample.truncate(CHECK_ENRICHMENT_SAMPLE_SIZE);
 
-    let mut missing = 0usize;
     let mut mismatched = 0usize;
 
     for (rel, abs_path) in &sample {
@@ -683,20 +691,17 @@ pub fn check_enrichment(root: &Path) -> Result<String, CodeMapError> {
             Ok(h) => h,
             Err(_) => continue,
         };
-        match enrichments.get(rel.as_str()) {
-            None => missing += 1,
-            Some(entry) if entry.hash != hash => mismatched += 1,
-            _ => {}
+        if let Some(entry) = enrichments.get(rel.as_str()) {
+            if entry.hash != hash {
+                mismatched += 1;
+            }
         }
     }
 
-    if missing > 0 || mismatched > 0 {
-        let mut reasons = Vec::new();
-        if missing > 0 { reasons.push(format!("{missing} files missing")); }
-        if mismatched > 0 { reasons.push(format!("{mismatched} hash mismatch")); }
+    if mismatched > 0 {
         let result = serde_json::json!({
             "stale": true,
-            "reason": reasons.join(", ")
+            "reason": format!("{mismatched} hash mismatch")
         });
         Ok(serde_json::to_string(&result).unwrap())
     } else {
@@ -1244,6 +1249,39 @@ mod tests {
         let output = check_enrichment(dir.path()).unwrap();
         let json: serde_json::Value = serde_json::from_str(&output).unwrap();
         assert_eq!(json["stale"], true);
+    }
+
+    #[test]
+    fn check_enrichment_orphans_dont_mask_missing() {
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+        // Two real files
+        let a = dir.path().join("a.rs");
+        let b = dir.path().join("b.rs");
+        fs::write(&a, "pub fn a() {}\n").unwrap();
+        fs::write(&b, "pub fn b() {}\n").unwrap();
+
+        let a_hash = hash_file(&a).unwrap();
+        let root_hash = blake3::hash(
+            dir.path().canonicalize().unwrap().to_string_lossy().as_bytes(),
+        ).to_hex().to_string();
+
+        let cache_dir = dir.path().join(".cache/taoki");
+        fs::create_dir_all(&cache_dir).unwrap();
+        // Enrichment has a.rs (fresh) + orphan.rs (gone), but NOT b.rs
+        // enriched_count (2) >= source_count (2), so old count check would pass
+        let enrichment = serde_json::json!({
+            "version": 1, "model": "haiku", "repo_root_hash": root_hash,
+            "files": {
+                "a.rs": { "hash": a_hash, "enrichment": "A." },
+                "orphan.rs": { "hash": "dead", "enrichment": "Gone." }
+            }
+        });
+        fs::write(cache_dir.join("enriched.json"), serde_json::to_string(&enrichment).unwrap()).unwrap();
+
+        let output = check_enrichment(dir.path()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(json["stale"], true, "should detect b.rs missing even with orphan padding count");
     }
 
     #[test]
