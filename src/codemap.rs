@@ -58,6 +58,31 @@ const CACHE_FILE: &str = "code-map.json";
 const ENRICHMENT_FILE: &str = "enriched.json";
 const ENRICHMENT_VERSION: u32 = 1;
 
+const ENRICHMENT_SKIP_SEGMENTS: &[&str] = &[
+    "target/", "dist/", "build/", "generated/", "vendor/", "node_modules/",
+];
+
+const ENRICHMENT_SKIP_GLOBS: &[&str] = &[
+    ".generated.", ".gen.", ".pb.",
+];
+
+pub fn should_skip_path(rel_path: &str) -> bool {
+    let normalized = rel_path.replace('\\', "/");
+    for seg in ENRICHMENT_SKIP_SEGMENTS {
+        if normalized.contains(seg) {
+            return true;
+        }
+    }
+    // Check filename portion only for glob-like patterns
+    let filename = normalized.rsplit('/').next().unwrap_or(&normalized);
+    for pat in ENRICHMENT_SKIP_GLOBS {
+        if filename.contains(pat) {
+            return true;
+        }
+    }
+    false
+}
+
 struct FileResult {
     path: String,
     lines: usize,
@@ -122,7 +147,7 @@ pub fn walk_files_public(root: &Path) -> Result<Vec<PathBuf>, CodeMapError> {
     walk_files(root, &[])
 }
 
-fn hash_file(path: &Path) -> std::io::Result<String> {
+pub fn hash_file(path: &Path) -> std::io::Result<String> {
     let data = std::fs::read(path)?;
     Ok(blake3::hash(&data).to_hex().to_string())
 }
@@ -989,6 +1014,21 @@ mod tests {
         let result = build_code_map(dir.path(), &[], &["broken.rs".to_string()]).unwrap();
         assert!(result.contains("broken.rs"), "should list the file");
         assert!(!result.contains("[skeleton]"), "should have no skeleton for broken code:\n{result}");
+    }
+
+    #[test]
+    fn skip_filter_matches_known_paths() {
+        assert!(should_skip_path("target/debug/build/foo.rs"));
+        assert!(should_skip_path("vendor/lib/bar.py"));
+        assert!(should_skip_path("node_modules/pkg/index.js"));
+        assert!(should_skip_path("dist/bundle.js"));
+        assert!(should_skip_path("src/generated/api.ts"));
+        assert!(should_skip_path("foo.generated.ts"));
+        assert!(should_skip_path("proto.pb.go"));
+        assert!(should_skip_path("foo.gen.rs"));
+        assert!(!should_skip_path("src/main.rs"));
+        assert!(!should_skip_path("src/codemap.rs"));
+        assert!(!should_skip_path("lib/target_utils.py"));
     }
 
     #[test]
