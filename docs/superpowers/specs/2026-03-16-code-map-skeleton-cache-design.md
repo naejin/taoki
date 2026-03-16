@@ -195,3 +195,9 @@ Consider calling mcp__taoki__index on this file first to get its structure with 
 - Test parse error files produce no `[skeleton]` block
 - Test `files` works independently of `globs`
 - Test skeleton is properly indented (2 spaces per line)
+- Test `[enriched]` appears before `[skeleton]` when both are present
+- Test `files` entries with `./` prefix are normalized and still match
+
+### Path normalization
+
+The `files` parameter values are compared against relative paths produced by `strip_prefix(root)`, which yields paths like `src/lib.rs` (no leading `./`). Normalize `files` entries by stripping any leading `./` before matching. This prevents silent mismatches when the agent passes `./src/lib.rs` instead of `src/lib.rs`.
