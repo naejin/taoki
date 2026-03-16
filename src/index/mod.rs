@@ -408,8 +408,16 @@ pub fn index_file(path: &Path) -> Result<String, IndexError> {
 }
 
 pub fn index_source(source: &[u8], lang: Language) -> Result<String, IndexError> {
-    let (_api, skeleton) = extract_all(source, lang)?;
-    Ok(skeleton)
+    let mut parser = Parser::new();
+    parser
+        .set_language(&lang.ts_language())
+        .map_err(|_| IndexError::ParseFailed)?;
+
+    let tree = parser.parse(source, None).ok_or(IndexError::ParseFailed)?;
+    let root = tree.root_node();
+    let extractor = lang.extractor();
+
+    Ok(build_skeleton(root, source, extractor))
 }
 
 pub fn extract_all(source: &[u8], lang: Language) -> Result<(PublicApi, String), IndexError> {
@@ -422,10 +430,12 @@ pub fn extract_all(source: &[u8], lang: Language) -> Result<(PublicApi, String),
     let root = tree.root_node();
     let extractor = lang.extractor();
 
-    // Extract public API
     let api = extractor.extract_public_api(root, source);
+    let skeleton = build_skeleton(root, source, extractor);
+    Ok((api, skeleton))
+}
 
-    // Extract skeleton
+fn build_skeleton(root: Node, source: &[u8], extractor: &dyn LanguageExtractor) -> String {
     let module_doc = detect_module_doc(root, source, extractor);
     let mut entries = Vec::new();
     let mut test_lines: Vec<usize> = Vec::new();
@@ -454,8 +464,7 @@ pub fn extract_all(source: &[u8], lang: Language) -> Result<(PublicApi, String),
         }
     }
 
-    let skeleton = format_skeleton(&entries, &test_lines, module_doc);
-    Ok((api, skeleton))
+    format_skeleton(&entries, &test_lines, module_doc)
 }
 
 pub fn extract_public_api(source: &[u8], lang: Language) -> Result<(Vec<String>, Vec<String>), IndexError> {

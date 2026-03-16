@@ -113,14 +113,7 @@ pub fn index_source(source: &[u8], lang: Language) -> Result<String, IndexError>
 }
 ```
 
-And refactor `extract_public_api` (line 451-462) similarly:
-
-```rust
-pub fn extract_public_api(source: &[u8], lang: Language) -> Result<(Vec<String>, Vec<String>), IndexError> {
-    let (api, _skeleton) = extract_all(source, lang)?;
-    Ok((api.types, api.functions))
-}
-```
+Note: `extract_public_api` remains a standalone function (does NOT delegate to `extract_all`) to avoid paying the skeleton extraction cost when only the public API is needed. This was established in commit 4db1f76.
 
 - [ ] **Step 4: Run test to verify it passes**
 

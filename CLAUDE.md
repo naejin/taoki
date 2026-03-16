@@ -7,7 +7,7 @@ MCP (Model Context Protocol) server that provides structural code intelligence t
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"  # Rust toolchain not in default PATH
 cargo build
-cargo test                             # 39 unit tests, all inline (#[cfg(test)])
+cargo test                             # 52 unit tests, all inline (#[cfg(test)])
 cargo clippy                           # must pass with no warnings
 ```
 
@@ -21,7 +21,7 @@ Four modules under `src/`:
 - **`mcp.rs`** — JSON-RPC dispatch. Routes `initialize`, `ping`, `tools/list`, `tools/call`. Tool calls dispatch to `call_index`, `call_code_map`, and `call_dependencies`. Also handles filename-based test file detection (collapses entire test files in `index` output).
 - **`codemap.rs`** — `build_code_map()` walks a repo (respecting .gitignore), hashes files with blake3, caches results in `.cache/taoki/code-map.json` with file-level locking (fs2). Calls `index::extract_all` for each file to get both public API and structural skeleton in a single parse pass. Computes heuristic tags per file (`[entry-point]`, `[tests]`, `[error-types]`, `[module-root]`, etc.). Supports optional `files` parameter to include full skeletons inline for specific files. Also triggers dependency graph building via `deps.rs`. Loads and merges LLM enrichment data from `.cache/taoki/enriched.json` when available.
 - **`deps.rs`** — Cross-file dependency graph. Extracts imports from source files using tree-sitter, resolves them to actual files in the repo (best-effort, language-specific), and builds a cached graph. Provides `query_deps()` to show depends_on/used_by/external for any file. Cache stored at `.cache/taoki/deps.json`.
-- **`index/`** — `index_file()` and `index_source()` use tree-sitter to parse source files and extract structural skeletons (imports, types, functions, impls, modules). Language-specific extractors live in `index/languages/` — one file per language. TypeScript and JavaScript share `typescript.rs`. Each extractor implements `is_test_node()` to detect and collapse test code. The `index` tool outputs sections: `imports:`, `consts:`, `exprs:` (top-level expressions for Python/TypeScript), `types:`, `traits:`, `impls:`, `fns:`, `classes:`, `mod:`, `macros:`, and `tests:`.
+- **`index/`** — `index_file()` and `index_source()` use tree-sitter to parse source files and extract structural skeletons (imports, types, functions, impls, modules). `extract_all()` returns both the public API and skeleton in a single parse pass (used by `codemap.rs`). Language-specific extractors live in `index/languages/` — one file per language. TypeScript and JavaScript share `typescript.rs`. Each extractor implements `is_test_node()` to detect and collapse test code. The `index` tool outputs sections: `imports:`, `consts:`, `exprs:` (top-level expressions for Python/TypeScript), `types:`, `traits:`, `impls:`, `fns:`, `classes:`, `mod:`, `macros:`, and `tests:`.
 
 ## Supported Languages
 

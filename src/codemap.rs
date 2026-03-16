@@ -981,9 +981,10 @@ mod tests {
     #[test]
     fn code_map_parse_error_no_skeleton() {
         let dir = tempfile::tempdir().unwrap();
-        // Tree-sitter is error-tolerant, so broken syntax still parses but
-        // produces no public API and an empty/minimal skeleton — verify no
-        // skeleton block appears in the output for such files.
+        // Tree-sitter is error-tolerant, so broken syntax still parses (returns Ok,
+        // not Err) — meaning parse_error stays false. However, the skeleton is
+        // empty/minimal for garbage input, so the [skeleton] block is suppressed
+        // by the `!fr.skeleton.is_empty()` check, not by the parse_error flag.
         fs::write(dir.path().join("broken.rs"), "this is not valid rust {{{{").unwrap();
         let result = build_code_map(dir.path(), &[], &["broken.rs".to_string()]).unwrap();
         assert!(result.contains("broken.rs"), "should list the file");
