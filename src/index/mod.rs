@@ -4,6 +4,7 @@ use std::path::Path;
 use tree_sitter::{Node, Parser};
 
 mod languages;
+pub(crate) mod body;
 
 pub(crate) const FIELD_TRUNCATE_THRESHOLD: usize = 8;
 pub(crate) const MAX_FILE_SIZE: u64 = 2 * 1024 * 1024;
