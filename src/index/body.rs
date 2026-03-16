@@ -945,4 +945,155 @@ class Example {
         let (errors, _) = extract_error_returns(method_body, &bytes, Language::Java);
         assert_eq!(errors, vec!["IllegalArgumentException", "RuntimeException"]);
     }
+
+    // --- Golden snapshot tests ---
+
+    #[test]
+    fn test_golden_rust() {
+        let src = r#"
+fn handler(cmd: &str) -> Result<(), AppError> {
+    let config = load_config()?;
+    let db = connect()?;
+    match cmd {
+        "create" => create(&db),
+        "delete" => delete(&db),
+        "list" => list(&db),
+        _ => return Err(AppError::UnknownCommand),
+    }
+    Ok(())
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Rust);
+        let root = tree.root_node();
+        let fn_node = root.child(0).unwrap();
+        let insights = analyze_body(fn_node, &bytes, Language::Rust);
+        let lines = insights.format_lines();
+        assert_eq!(lines, vec![
+            "→ calls: Err, Ok, connect, create, delete, list, load_config",
+            "→ match: cmd → \"create\", \"delete\", \"list\", _",
+            "→ errors: AppError::UnknownCommand, 2× ?",
+        ]);
+    }
+
+    #[test]
+    fn test_golden_typescript() {
+        let src = r#"
+function processEvent(event: Event): void {
+    validate(event);
+    const result = transform(event.data);
+    switch (event.type) {
+        case "click":
+            handleClick(result);
+            break;
+        case "hover":
+            handleHover(result);
+            break;
+        default:
+            throw new UnhandledEventError("unknown");
+    }
+    log(result);
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::TypeScript);
+        let root = tree.root_node();
+        let fn_node = root.child(0).unwrap();
+        let insights = analyze_body(fn_node, &bytes, Language::TypeScript);
+        let lines = insights.format_lines();
+        assert_eq!(lines, vec![
+            "→ calls: handleClick, handleHover, log, transform, validate",
+            "→ match: event.type → \"click\", \"hover\", default",
+            "→ errors: UnhandledEventError",
+        ]);
+    }
+
+    #[test]
+    fn test_golden_python() {
+        let src = r#"
+def process(action, data):
+    validate(data)
+    result = transform(data)
+    if not result:
+        raise ValueError("empty")
+    save(result)
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Python);
+        let root = tree.root_node();
+        let fn_node = root.child(0).unwrap();
+        let insights = analyze_body(fn_node, &bytes, Language::Python);
+        let lines = insights.format_lines();
+        assert_eq!(lines, vec![
+            "→ calls: ValueError, save, transform, validate",
+            "→ errors: ValueError",
+        ]);
+    }
+
+    #[test]
+    fn test_golden_go() {
+        let src = r#"
+package main
+import "errors"
+func handle(cmd string) error {
+    validate(cmd)
+    switch cmd {
+    case "start":
+        start()
+    case "stop":
+        stop()
+    default:
+        return errors.New("unknown command")
+    }
+    return nil
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Go);
+        let root = tree.root_node();
+        let mut cursor = root.walk();
+        let fn_node = root.children(&mut cursor)
+            .find(|c| c.kind() == "function_declaration")
+            .unwrap();
+        let insights = analyze_body(fn_node, &bytes, Language::Go);
+        let lines = insights.format_lines();
+        assert_eq!(lines, vec![
+            "→ calls: New, start, stop, validate",
+            "→ match: cmd → \"start\", \"stop\", default",
+            "→ errors: errors.New",
+        ]);
+    }
+
+    #[test]
+    fn test_golden_java() {
+        let src = r#"
+class Handler {
+    void handle(String cmd) {
+        validate(cmd);
+        switch (cmd) {
+            case "start":
+                start();
+                break;
+            case "stop":
+                stop();
+                break;
+            default:
+                throw new IllegalArgumentException("unknown");
+        }
+        log(cmd);
+    }
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Java);
+        let root = tree.root_node();
+        let class_node = root.child(0).unwrap();
+        let body = class_node.child_by_field_name("body").unwrap();
+        let mut cursor = body.walk();
+        let method = body.children(&mut cursor)
+            .find(|c| c.kind() == "method_declaration")
+            .unwrap();
+        let insights = analyze_body(method, &bytes, Language::Java);
+        let lines = insights.format_lines();
+        assert_eq!(lines, vec![
+            "→ calls: log, start, stop, validate",
+            "→ match: cmd → \"start\", \"stop\", default",
+            "→ errors: IllegalArgumentException",
+        ]);
+    }
 }
