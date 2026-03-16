@@ -205,9 +205,9 @@ impl SkeletonEntry {
     }
 }
 
-pub(crate) struct PublicApi {
-    pub(crate) types: Vec<String>,
-    pub(crate) functions: Vec<String>,
+pub struct PublicApi {
+    pub types: Vec<String>,
+    pub functions: Vec<String>,
 }
 
 pub(crate) trait LanguageExtractor {
@@ -417,6 +417,25 @@ pub fn index_source(source: &[u8], lang: Language) -> Result<String, IndexError>
     let root = tree.root_node();
     let extractor = lang.extractor();
 
+    Ok(build_skeleton(root, source, extractor))
+}
+
+pub fn extract_all(source: &[u8], lang: Language) -> Result<(PublicApi, String), IndexError> {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&lang.ts_language())
+        .map_err(|_| IndexError::ParseFailed)?;
+
+    let tree = parser.parse(source, None).ok_or(IndexError::ParseFailed)?;
+    let root = tree.root_node();
+    let extractor = lang.extractor();
+
+    let api = extractor.extract_public_api(root, source);
+    let skeleton = build_skeleton(root, source, extractor);
+    Ok((api, skeleton))
+}
+
+fn build_skeleton(root: Node, source: &[u8], extractor: &dyn LanguageExtractor) -> String {
     let module_doc = detect_module_doc(root, source, extractor);
     let mut entries = Vec::new();
     let mut test_lines: Vec<usize> = Vec::new();
@@ -445,7 +464,7 @@ pub fn index_source(source: &[u8], lang: Language) -> Result<String, IndexError>
         }
     }
 
-    Ok(format_skeleton(&entries, &test_lines, module_doc))
+    format_skeleton(&entries, &test_lines, module_doc)
 }
 
 pub fn extract_public_api(source: &[u8], lang: Language) -> Result<(Vec<String>, Vec<String>), IndexError> {
@@ -717,6 +736,19 @@ public enum Direction {
             "public enum Direction",
             "UP",
         ]);
+    }
+
+    #[test]
+    fn extract_all_returns_api_and_skeleton() {
+        let src = "pub struct Foo {}\npub fn bar() {}\nfn private() {}\n";
+        let (api, skeleton) = extract_all(src.as_bytes(), Language::Rust).unwrap();
+        assert!(api.types.contains(&"Foo".to_string()));
+        assert!(api.functions.iter().any(|f| f.starts_with("bar(")));
+        assert!(!api.functions.iter().any(|f| f.starts_with("private(")));
+        assert!(skeleton.contains("types:"));
+        assert!(skeleton.contains("Foo"));
+        assert!(skeleton.contains("fns:"));
+        assert!(skeleton.contains("bar()"));
     }
 
     #[test]
