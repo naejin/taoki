@@ -191,6 +191,7 @@ pub(crate) struct SkeletonEntry {
     pub(crate) text: String,
     pub(crate) children: Vec<String>,
     pub(crate) attrs: Vec<String>,
+    pub(crate) insights: self::body::BodyInsights,
 }
 
 impl SkeletonEntry {
@@ -202,6 +203,7 @@ impl SkeletonEntry {
             text,
             children: Vec::new(),
             attrs: Vec::new(),
+            insights: self::body::BodyInsights::default(),
         }
     }
 }
@@ -322,6 +324,9 @@ pub(crate) fn format_skeleton(
                 );
                 for child in &entry.children {
                     let _ = writeln!(out, "    {child}");
+                }
+                for line in entry.insights.format_lines() {
+                    let _ = writeln!(out, "    {line}");
                 }
             }
         }
