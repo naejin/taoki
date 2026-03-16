@@ -91,23 +91,415 @@ pub(crate) fn analyze_body(node: Node, source: &[u8], lang: Language) -> BodyIns
     }
 }
 
-// --- Placeholder implementations (filled in subsequent tasks) ---
+// --- Body walker ---
 
-fn extract_calls(_body: Node, _source: &[u8], _lang: Language) -> Vec<String> {
-    Vec::new()
+/// Check if a node is a function/closure definition that should not be descended into.
+fn is_nested_function_def(node: Node, lang: Language) -> bool {
+    match lang {
+        Language::Rust => matches!(node.kind(), "function_item" | "closure_expression"),
+        Language::Python => matches!(node.kind(), "function_definition" | "lambda"),
+        Language::TypeScript | Language::JavaScript => {
+            matches!(node.kind(), "function_declaration" | "arrow_function" | "function")
+        }
+        Language::Go => matches!(node.kind(), "func_literal" | "function_declaration"),
+        Language::Java => matches!(node.kind(), "method_declaration" | "lambda_expression"),
+    }
 }
 
-fn extract_match_arms(_body: Node, _source: &[u8], _lang: Language) -> Vec<MatchInsight> {
-    Vec::new()
+/// Recursively walk a function body, visiting every node except those inside
+/// nested function/closure definitions. The visitor sees each node once.
+fn walk_body(node: Node, lang: Language, visitor: &mut impl FnMut(Node)) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if is_nested_function_def(child, lang) {
+            continue;
+        }
+        visitor(child);
+        walk_body(child, lang, visitor);
+    }
 }
 
-fn extract_error_returns(_body: Node, _source: &[u8], _lang: Language) -> (Vec<String>, usize) {
-    (Vec::new(), 0)
+// --- Call extraction ---
+
+/// Extract the callee name from a call expression node.
+fn extract_callee_name<'a>(node: Node<'a>, source: &'a [u8], lang: Language) -> Option<&'a str> {
+    match lang {
+        Language::Rust => {
+            let func = node.child_by_field_name("function")?;
+            match func.kind() {
+                "identifier" => Some(node_text(func, source)),
+                "scoped_identifier" => Some(node_text(func, source)),
+                "field_expression" => {
+                    let field = func.child_by_field_name("field")?;
+                    Some(node_text(field, source))
+                }
+                _ => Some(node_text(func, source)),
+            }
+        }
+        Language::Python => {
+            let func = node.child_by_field_name("function")?;
+            match func.kind() {
+                "identifier" => Some(node_text(func, source)),
+                "attribute" => {
+                    let attr = func.child_by_field_name("attribute")?;
+                    Some(node_text(attr, source))
+                }
+                _ => None,
+            }
+        }
+        Language::TypeScript | Language::JavaScript => {
+            let func = node.child_by_field_name("function")?;
+            match func.kind() {
+                "identifier" => Some(node_text(func, source)),
+                "member_expression" => {
+                    let prop = func.child_by_field_name("property")?;
+                    Some(node_text(prop, source))
+                }
+                _ => None,
+            }
+        }
+        Language::Go => {
+            let func = node.child_by_field_name("function")?;
+            match func.kind() {
+                "identifier" => Some(node_text(func, source)),
+                "selector_expression" => {
+                    let field = func.child_by_field_name("field")?;
+                    Some(node_text(field, source))
+                }
+                _ => None,
+            }
+        }
+        Language::Java => {
+            let name = node.child_by_field_name("name")?;
+            Some(node_text(name, source))
+        }
+    }
+}
+
+/// Check if a node is a call expression for the given language.
+fn is_call_node(node: Node, lang: Language) -> bool {
+    match lang {
+        Language::Java => node.kind() == "method_invocation",
+        Language::Python => node.kind() == "call",
+        _ => node.kind() == "call_expression",
+    }
+}
+
+fn extract_calls(body: Node, source: &[u8], lang: Language) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    walk_body(body, lang, &mut |node| {
+        if is_call_node(node, lang) {
+            if let Some(name) = extract_callee_name(node, source, lang) {
+                let truncated = truncate(name, INSIGHT_CALL_TRUNCATE);
+                seen.insert(truncated);
+            }
+        }
+    });
+    seen.into_iter().collect() // BTreeSet gives sorted order
+}
+
+// --- Match/switch arm extraction ---
+
+fn extract_match_arms(body: Node, source: &[u8], lang: Language) -> Vec<MatchInsight> {
+    let mut insights = Vec::new();
+    walk_body(body, lang, &mut |node| {
+        if let Some(insight) = extract_single_match(node, source, lang) {
+            insights.push(insight);
+        }
+    });
+    insights
+}
+
+fn extract_single_match(node: Node, source: &[u8], lang: Language) -> Option<MatchInsight> {
+    match lang {
+        Language::Rust => extract_rust_match(node, source),
+        Language::Python => extract_python_match(node, source),
+        Language::TypeScript | Language::JavaScript => extract_ts_switch(node, source),
+        Language::Go => extract_go_switch(node, source),
+        Language::Java => extract_java_switch(node, source),
+    }
+}
+
+fn extract_rust_match(node: Node, source: &[u8]) -> Option<MatchInsight> {
+    if node.kind() != "match_expression" {
+        return None;
+    }
+    let scrutinee = node.child_by_field_name("value")?;
+    let target = truncate(node_text(scrutinee, source).trim(), INSIGHT_MATCH_TARGET_TRUNCATE);
+
+    let match_body = node.children(&mut node.walk())
+        .find(|c| c.kind() == "match_block")?;
+
+    let mut arms = Vec::new();
+    let mut cursor = match_body.walk();
+    for child in match_body.children(&mut cursor) {
+        if child.kind() == "match_arm" {
+            if let Some(pattern) = child.child_by_field_name("pattern") {
+                arms.push(truncate(node_text(pattern, source).trim(), INSIGHT_ARM_TRUNCATE));
+            }
+        }
+    }
+    Some(MatchInsight { target, arms })
+}
+
+fn extract_python_match(node: Node, source: &[u8]) -> Option<MatchInsight> {
+    if node.kind() != "match_statement" {
+        return None;
+    }
+    let subject = node.child_by_field_name("subject")?;
+    let target = truncate(node_text(subject, source).trim(), INSIGHT_MATCH_TARGET_TRUNCATE);
+
+    let mut arms = Vec::new();
+    let body = node.child_by_field_name("body");
+    let search_node = body.unwrap_or(node);
+    let mut cursor = search_node.walk();
+    for child in search_node.children(&mut cursor) {
+        if child.kind() == "case_clause" {
+            if let Some(pattern) = child.children(&mut child.walk())
+                .find(|c| c.is_named() && c.kind() != "block")
+            {
+                arms.push(truncate(node_text(pattern, source).trim(), INSIGHT_ARM_TRUNCATE));
+            }
+        }
+    }
+    Some(MatchInsight { target, arms })
+}
+
+fn unwrap_parenthesized(node: Node) -> Node {
+    if node.kind() == "parenthesized_expression" {
+        node.child(1).unwrap_or(node)
+    } else {
+        node
+    }
+}
+
+fn extract_ts_switch(node: Node, source: &[u8]) -> Option<MatchInsight> {
+    if node.kind() != "switch_statement" {
+        return None;
+    }
+    let value = node.child_by_field_name("value")?;
+    let inner = unwrap_parenthesized(value);
+    let target = truncate(node_text(inner, source).trim(), INSIGHT_MATCH_TARGET_TRUNCATE);
+
+    let switch_body = node.children(&mut node.walk())
+        .find(|c| c.kind() == "switch_body")?;
+
+    let mut arms = Vec::new();
+    let mut cursor = switch_body.walk();
+    for child in switch_body.children(&mut cursor) {
+        if child.kind() == "switch_case" {
+            if let Some(val) = child.child_by_field_name("value") {
+                arms.push(truncate(node_text(val, source).trim(), INSIGHT_ARM_TRUNCATE));
+            }
+        } else if child.kind() == "switch_default" {
+            arms.push("default".to_string());
+        }
+    }
+    Some(MatchInsight { target, arms })
+}
+
+fn extract_go_switch(node: Node, source: &[u8]) -> Option<MatchInsight> {
+    match node.kind() {
+        "expression_switch_statement" => {
+            let value = node.child_by_field_name("value");
+            let target = value
+                .map(|v| truncate(node_text(v, source).trim(), INSIGHT_MATCH_TARGET_TRUNCATE))
+                .unwrap_or_default();
+
+            let mut arms = Vec::new();
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "expression_case" {
+                    if let Some(val) = child.child_by_field_name("value") {
+                        arms.push(truncate(node_text(val, source).trim(), INSIGHT_ARM_TRUNCATE));
+                    }
+                } else if child.kind() == "default_case" {
+                    arms.push("default".to_string());
+                }
+            }
+            Some(MatchInsight { target, arms })
+        }
+        "type_switch_statement" => {
+            let target = "type".to_string();
+            let mut arms = Vec::new();
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "type_case" {
+                    if let Some(val) = child.children(&mut child.walk()).find(|c| c.is_named()) {
+                        arms.push(truncate(node_text(val, source).trim(), INSIGHT_ARM_TRUNCATE));
+                    }
+                } else if child.kind() == "default_case" {
+                    arms.push("default".to_string());
+                }
+            }
+            Some(MatchInsight { target, arms })
+        }
+        _ => None,
+    }
+}
+
+fn extract_java_switch(node: Node, source: &[u8]) -> Option<MatchInsight> {
+    if !matches!(node.kind(), "switch_expression" | "switch_statement") {
+        return None;
+    }
+    let condition = node.child_by_field_name("condition")?;
+    let inner = unwrap_parenthesized(condition);
+    let target = truncate(node_text(inner, source).trim(), INSIGHT_MATCH_TARGET_TRUNCATE);
+
+    let body = node.child_by_field_name("body")?;
+    let mut arms = Vec::new();
+    let mut cursor = body.walk();
+    for child in body.children(&mut cursor) {
+        if child.kind() == "switch_block_statement_group" {
+            let mut label_cursor = child.walk();
+            for label_child in child.children(&mut label_cursor) {
+                if label_child.kind() == "switch_label" {
+                    let text = node_text(label_child, source).trim();
+                    let cleaned = text.strip_prefix("case ").unwrap_or(text);
+                    let cleaned = cleaned.strip_suffix(':').unwrap_or(cleaned);
+                    if cleaned == "default" || text.starts_with("default") {
+                        arms.push("default".to_string());
+                    } else {
+                        arms.push(truncate(cleaned.trim(), INSIGHT_ARM_TRUNCATE));
+                    }
+                }
+            }
+        }
+    }
+    Some(MatchInsight { target, arms })
+}
+
+// --- Error return extraction ---
+
+fn extract_error_returns(body: Node, source: &[u8], lang: Language) -> (Vec<String>, usize) {
+    let mut errors = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut try_count: usize = 0;
+
+    walk_body(body, lang, &mut |node| {
+        match lang {
+            Language::Rust => {
+                // Count ? operators
+                if node.kind() == "try_expression" {
+                    try_count += 1;
+                    return;
+                }
+                // Err(...) calls
+                if node.kind() == "call_expression" {
+                    if let Some(func) = node.child_by_field_name("function") {
+                        if node_text(func, source) == "Err" {
+                            if let Some(args) = node.child_by_field_name("arguments") {
+                                if let Some(inner) = args.children(&mut args.walk())
+                                    .find(|c| c.is_named())
+                                {
+                                    let text = truncate(node_text(inner, source).trim(), INSIGHT_ERROR_TRUNCATE);
+                                    if seen.insert(text.clone()) {
+                                        errors.push(text);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // Macro invocations: bail!, anyhow!, panic!, todo!, unimplemented!
+                if node.kind() == "macro_invocation" {
+                    if let Some(mac) = node.child(0) {
+                        let name = node_text(mac, source);
+                        if matches!(name, "bail" | "anyhow" | "panic" | "todo" | "unimplemented") {
+                            let text = format!("{name}!");
+                            if seen.insert(text.clone()) {
+                                errors.push(text);
+                            }
+                        }
+                    }
+                }
+            }
+            Language::Python => {
+                if node.kind() == "raise_statement" {
+                    if let Some(expr) = node.children(&mut node.walk()).find(|c| c.is_named()) {
+                        let name = match expr.kind() {
+                            "call" => {
+                                expr.child_by_field_name("function")
+                                    .map(|f| node_text(f, source))
+                                    .unwrap_or_else(|| node_text(expr, source))
+                            }
+                            _ => node_text(expr, source),
+                        };
+                        let text = truncate(name.trim(), INSIGHT_ERROR_TRUNCATE);
+                        if seen.insert(text.clone()) {
+                            errors.push(text);
+                        }
+                    }
+                }
+            }
+            Language::TypeScript | Language::JavaScript => {
+                if node.kind() == "throw_statement" {
+                    if let Some(expr) = node.children(&mut node.walk()).find(|c| c.is_named()) {
+                        let name = match expr.kind() {
+                            "new_expression" => {
+                                expr.child_by_field_name("constructor")
+                                    .map(|c| node_text(c, source))
+                                    .unwrap_or_else(|| node_text(expr, source))
+                            }
+                            _ => node_text(expr, source),
+                        };
+                        let text = truncate(name.trim(), INSIGHT_ERROR_TRUNCATE);
+                        if seen.insert(text.clone()) {
+                            errors.push(text);
+                        }
+                    }
+                }
+            }
+            Language::Go => {
+                if node.kind() == "call_expression" {
+                    if let Some(func) = node.child_by_field_name("function") {
+                        let text = node_text(func, source);
+                        if matches!(text, "errors.New" | "fmt.Errorf") {
+                            let text = truncate(text, INSIGHT_ERROR_TRUNCATE);
+                            if seen.insert(text.clone()) {
+                                errors.push(text);
+                            }
+                        }
+                    }
+                }
+            }
+            Language::Java => {
+                if node.kind() == "throw_statement" {
+                    if let Some(expr) = node.children(&mut node.walk()).find(|c| c.is_named()) {
+                        let name = match expr.kind() {
+                            "object_creation_expression" => {
+                                expr.child_by_field_name("type")
+                                    .map(|t| node_text(t, source))
+                                    .unwrap_or_else(|| node_text(expr, source))
+                            }
+                            _ => node_text(expr, source),
+                        };
+                        let text = truncate(name.trim(), INSIGHT_ERROR_TRUNCATE);
+                        if seen.insert(text.clone()) {
+                            errors.push(text);
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    (errors, try_count)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tree_sitter::Parser;
+    use crate::index::Language;
+
+    fn parse_and_get_fn_body(source: &str, lang: Language) -> (tree_sitter::Tree, Vec<u8>) {
+        let bytes = source.as_bytes().to_vec();
+        let mut parser = Parser::new();
+        parser.set_language(&lang.ts_language()).unwrap();
+        let tree = parser.parse(&bytes, None).unwrap();
+        (tree, bytes)
+    }
 
     #[test]
     fn test_format_lines_empty() {
@@ -190,5 +582,367 @@ mod tests {
         assert_eq!(lines[0], "→ calls: alpha, beta");
         assert_eq!(lines[1], "→ match: x → 1, 2");
         assert_eq!(lines[2], "→ errors: Err(NotFound), 1× ?");
+    }
+
+    // --- walk_body tests ---
+
+    #[test]
+    fn test_walk_body_skips_nested_rust() {
+        let src = r#"
+fn outer() {
+    foo();
+    let f = || bar();
+    fn inner() { baz(); }
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Rust);
+        let root = tree.root_node();
+        let fn_node = root.child(0).unwrap();
+        assert_eq!(fn_node.kind(), "function_item");
+        let body = fn_node.child_by_field_name("body").unwrap();
+
+        let mut visited_kinds = Vec::new();
+        walk_body(body, Language::Rust, &mut |node| {
+            if node.kind() == "call_expression" {
+                let callee = node_text(node.child(0).unwrap(), &bytes);
+                visited_kinds.push(callee.to_string());
+            }
+        });
+        // Should see foo() but NOT bar() (closure) or baz() (inner fn)
+        assert_eq!(visited_kinds, vec!["foo"]);
+    }
+
+    #[test]
+    fn test_walk_body_skips_nested_python() {
+        let src = r#"
+def outer():
+    foo()
+    inner = lambda: bar()
+    def nested():
+        baz()
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Python);
+        let root = tree.root_node();
+        let fn_node = root.child(0).unwrap();
+        assert_eq!(fn_node.kind(), "function_definition");
+        let body = fn_node.child_by_field_name("body").unwrap();
+
+        let mut calls = Vec::new();
+        walk_body(body, Language::Python, &mut |node| {
+            if node.kind() == "call" {
+                if let Some(func) = node.child_by_field_name("function") {
+                    calls.push(node_text(func, &bytes).to_string());
+                }
+            }
+        });
+        assert_eq!(calls, vec!["foo"]);
+    }
+
+    #[test]
+    fn test_walk_body_skips_nested_typescript() {
+        let src = r#"
+function outer() {
+    foo();
+    const f = () => bar();
+    function inner() { baz(); }
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::TypeScript);
+        let root = tree.root_node();
+        let fn_node = root.child(0).unwrap();
+        assert_eq!(fn_node.kind(), "function_declaration");
+        let body = fn_node.child_by_field_name("body").unwrap();
+
+        let mut calls = Vec::new();
+        walk_body(body, Language::TypeScript, &mut |node| {
+            if node.kind() == "call_expression" {
+                if let Some(func) = node.child_by_field_name("function") {
+                    let text = node_text(func, &bytes);
+                    calls.push(text.to_string());
+                }
+            }
+        });
+        assert_eq!(calls, vec!["foo"]);
+    }
+
+    // --- extract_calls tests ---
+
+    #[test]
+    fn test_extract_calls_rust() {
+        let src = r#"
+fn example() {
+    let x = foo();
+    bar::baz();
+    x.method();
+    alpha(beta(gamma()));
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Rust);
+        let root = tree.root_node();
+        let fn_node = root.child(0).unwrap();
+        let body = fn_node.child_by_field_name("body").unwrap();
+
+        let calls = extract_calls(body, &bytes, Language::Rust);
+        assert_eq!(calls, vec!["alpha", "bar::baz", "beta", "foo", "gamma", "method"]);
+    }
+
+    #[test]
+    fn test_extract_calls_python() {
+        let src = r#"
+def example():
+    foo()
+    obj.method()
+    alpha(beta())
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Python);
+        let root = tree.root_node();
+        let fn_node = root.child(0).unwrap();
+        let body = fn_node.child_by_field_name("body").unwrap();
+        let calls = extract_calls(body, &bytes, Language::Python);
+        assert_eq!(calls, vec!["alpha", "beta", "foo", "method"]);
+    }
+
+    #[test]
+    fn test_extract_calls_typescript() {
+        let src = r#"
+function example() {
+    foo();
+    obj.method();
+    alpha(beta());
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::TypeScript);
+        let root = tree.root_node();
+        let fn_node = root.child(0).unwrap();
+        let body = fn_node.child_by_field_name("body").unwrap();
+        let calls = extract_calls(body, &bytes, Language::TypeScript);
+        assert_eq!(calls, vec!["alpha", "beta", "foo", "method"]);
+    }
+
+    #[test]
+    fn test_extract_calls_go() {
+        let src = r#"
+package main
+func example() {
+    foo()
+    pkg.Method()
+    alpha(beta())
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Go);
+        let root = tree.root_node();
+        let mut cursor = root.walk();
+        let fn_node = root.children(&mut cursor)
+            .find(|c| c.kind() == "function_declaration")
+            .unwrap();
+        let body = fn_node.child_by_field_name("body").unwrap();
+        let calls = extract_calls(body, &bytes, Language::Go);
+        assert_eq!(calls, vec!["Method", "alpha", "beta", "foo"]);
+    }
+
+    #[test]
+    fn test_extract_calls_java() {
+        let src = r#"
+class Example {
+    void example() {
+        foo();
+        obj.method();
+        alpha(beta());
+    }
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Java);
+        let root = tree.root_node();
+        let class_node = root.child(0).unwrap();
+        let body = class_node.child_by_field_name("body").unwrap();
+        let mut cursor = body.walk();
+        let method = body.children(&mut cursor)
+            .find(|c| c.kind() == "method_declaration")
+            .unwrap();
+        let method_body = method.child_by_field_name("body").unwrap();
+        let calls = extract_calls(method_body, &bytes, Language::Java);
+        assert_eq!(calls, vec!["alpha", "beta", "foo", "method"]);
+    }
+
+    // --- extract_match_arms tests ---
+
+    #[test]
+    fn test_extract_match_rust() {
+        let src = r#"
+fn example(cmd: &str) {
+    match cmd {
+        "start" => start(),
+        "stop" => stop(),
+        _ => default(),
+    }
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Rust);
+        let root = tree.root_node();
+        let fn_node = root.child(0).unwrap();
+        let body = fn_node.child_by_field_name("body").unwrap();
+        let matches = extract_match_arms(body, &bytes, Language::Rust);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].target, "cmd");
+        assert_eq!(matches[0].arms, vec!["\"start\"", "\"stop\"", "_"]);
+    }
+
+    #[test]
+    fn test_extract_match_typescript() {
+        let src = r#"
+function example(cmd: string) {
+    switch (cmd) {
+        case "start":
+            start();
+            break;
+        case "stop":
+            stop();
+            break;
+        default:
+            other();
+    }
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::TypeScript);
+        let root = tree.root_node();
+        let fn_node = root.child(0).unwrap();
+        let body = fn_node.child_by_field_name("body").unwrap();
+        let matches = extract_match_arms(body, &bytes, Language::TypeScript);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].target, "cmd");
+        assert_eq!(matches[0].arms, vec!["\"start\"", "\"stop\"", "default"]);
+    }
+
+    #[test]
+    fn test_extract_match_go() {
+        let src = r#"
+package main
+func example(cmd string) {
+    switch cmd {
+    case "start":
+        start()
+    case "stop":
+        stop()
+    default:
+        other()
+    }
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Go);
+        let root = tree.root_node();
+        let mut cursor = root.walk();
+        let fn_node = root.children(&mut cursor)
+            .find(|c| c.kind() == "function_declaration")
+            .unwrap();
+        let body = fn_node.child_by_field_name("body").unwrap();
+        let matches = extract_match_arms(body, &bytes, Language::Go);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].target, "cmd");
+        assert_eq!(matches[0].arms, vec!["\"start\"", "\"stop\"", "default"]);
+    }
+
+    // --- extract_error_returns tests ---
+
+    #[test]
+    fn test_extract_errors_rust() {
+        let src = r#"
+fn example() -> Result<(), MyError> {
+    let x = something()?;
+    let y = other()?;
+    if bad {
+        return Err(MyError::NotFound);
+    }
+    bail!("oh no");
+    Ok(())
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Rust);
+        let root = tree.root_node();
+        let fn_node = root.child(0).unwrap();
+        let body = fn_node.child_by_field_name("body").unwrap();
+        let (errors, try_count) = extract_error_returns(body, &bytes, Language::Rust);
+        assert_eq!(try_count, 2);
+        assert_eq!(errors, vec!["MyError::NotFound", "bail!"]);
+    }
+
+    #[test]
+    fn test_extract_errors_python() {
+        let src = r#"
+def example():
+    raise ValueError("bad")
+    raise NotFoundError()
+    raise ValueError("duplicate")
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Python);
+        let root = tree.root_node();
+        let fn_node = root.child(0).unwrap();
+        let body = fn_node.child_by_field_name("body").unwrap();
+        let (errors, try_count) = extract_error_returns(body, &bytes, Language::Python);
+        assert_eq!(try_count, 0);
+        assert_eq!(errors, vec!["ValueError", "NotFoundError"]);
+    }
+
+    #[test]
+    fn test_extract_errors_typescript() {
+        let src = r#"
+function example() {
+    throw new Error("bad");
+    throw new NotFoundError("missing");
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::TypeScript);
+        let root = tree.root_node();
+        let fn_node = root.child(0).unwrap();
+        let body = fn_node.child_by_field_name("body").unwrap();
+        let (errors, _) = extract_error_returns(body, &bytes, Language::TypeScript);
+        assert_eq!(errors, vec!["Error", "NotFoundError"]);
+    }
+
+    #[test]
+    fn test_extract_errors_go() {
+        let src = r#"
+package main
+import "errors"
+import "fmt"
+func example() error {
+    if bad {
+        return errors.New("bad")
+    }
+    x := fmt.Errorf("failed: %v", err)
+    return x
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Go);
+        let root = tree.root_node();
+        let mut cursor = root.walk();
+        let fn_node = root.children(&mut cursor)
+            .find(|c| c.kind() == "function_declaration")
+            .unwrap();
+        let body = fn_node.child_by_field_name("body").unwrap();
+        let (errors, _) = extract_error_returns(body, &bytes, Language::Go);
+        assert_eq!(errors, vec!["errors.New", "fmt.Errorf"]);
+    }
+
+    #[test]
+    fn test_extract_errors_java() {
+        let src = r#"
+class Example {
+    void example() {
+        throw new IllegalArgumentException("bad");
+        throw new RuntimeException("oops");
+    }
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Java);
+        let root = tree.root_node();
+        let class_node = root.child(0).unwrap();
+        let body = class_node.child_by_field_name("body").unwrap();
+        let mut cursor = body.walk();
+        let method = body.children(&mut cursor)
+            .find(|c| c.kind() == "method_declaration")
+            .unwrap();
+        let method_body = method.child_by_field_name("body").unwrap();
+        let (errors, _) = extract_error_returns(method_body, &bytes, Language::Java);
+        assert_eq!(errors, vec!["IllegalArgumentException", "RuntimeException"]);
     }
 }
