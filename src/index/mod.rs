@@ -616,6 +616,7 @@ impl Config {
     pub fn new(name: String) -> Self { todo!() }
 }
 
+/// Process the input string.
 pub fn process(input: &str) -> Result<String, Error> { todo!() }
 
 pub mod utils;
@@ -640,6 +641,7 @@ macro_rules! my_macro { () => {}; }
             "Config",
             "fns:",
             "pub process(input: &str)",
+            "/// Process the input string.",
             "mod:",
             "pub utils",
             "macros:",
