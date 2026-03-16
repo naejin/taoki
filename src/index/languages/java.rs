@@ -291,7 +291,9 @@ impl LanguageExtractor for JavaExtractor {
                 }
                 return None;
             }
-            if p.is_extra() {
+            // Skip non-comment extras; stop at non-doc comments
+            // (is_extra() includes // comments in Java, which must not be skipped)
+            if p.is_extra() && p.kind() != "line_comment" && p.kind() != "block_comment" {
                 prev = p.prev_sibling();
                 continue;
             }

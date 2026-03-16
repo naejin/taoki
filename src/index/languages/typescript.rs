@@ -334,7 +334,9 @@ impl LanguageExtractor for TsJsExtractor {
                 }
                 return None;
             }
-            if p.is_extra() {
+            // Skip non-comment extras; stop at non-doc comments
+            // (is_extra() includes // comments in TS, which must not be skipped)
+            if p.is_extra() && p.kind() != "comment" {
                 prev = p.prev_sibling();
                 continue;
             }

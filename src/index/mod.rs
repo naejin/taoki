@@ -949,6 +949,20 @@ function undocumented() {}
     }
 
     #[test]
+    fn ts_line_comment_blocks_doc_attribution() {
+        let src = "\
+/** Doc for something else. */
+function foo() {}
+// unrelated comment
+export function bar() {}
+";
+        let out = idx(src, Language::TypeScript);
+        has(&out, &["/// Doc for something else."]);
+        // bar must NOT get foo's doc — the // comment is a barrier
+        lacks(&out, &["bar\n        /// Doc"]);
+    }
+
+    #[test]
     fn go_doc_comment_extracted() {
         let src = "\
 package main
@@ -998,6 +1012,22 @@ public class Bare {}
             "/// Represents a user in the system.",
         ]);
         lacks(&out, &["/// Bare", "Contains identity"]);
+    }
+
+    #[test]
+    fn java_line_comment_blocks_doc_attribution() {
+        let src = "\
+package com.example;
+
+/** Doc for SomeOtherClass. */
+class SomeOtherClass {}
+// TODO: remove this
+public class MyClass {}
+";
+        let out = idx(src, Language::Java);
+        has(&out, &["/// Doc for SomeOtherClass."]);
+        // MyClass must NOT get SomeOtherClass's doc
+        lacks(&out, &["MyClass\n        /// Doc"]);
     }
 
     #[test]
