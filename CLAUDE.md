@@ -36,7 +36,11 @@ Rust (.rs), Python (.py, .pyi), TypeScript (.ts, .tsx), JavaScript (.js, .jsx, .
 - Files over 2MB are skipped (`MAX_FILE_SIZE` in `index/mod.rs`).
 - Struct fields are truncated after 8 fields (`FIELD_TRUNCATE_THRESHOLD`).
 - Body insights have per-category limits: 12 calls (`MAX_CALLS`), 10 match arms (`MAX_MATCH_ARMS`), 8 error returns (`MAX_ERRORS`). Call names truncated at 40 chars, match targets at 30, arms at 30, errors at 40.
-- **Call prioritization is purely AST-structural — no name-based heuristics.** `extract_callee_name` classifies calls as primary (free/scoped) or method based on the call-site's grammar node kind (e.g., `identifier`/`scoped_identifier` vs `field_expression`). `is_noise_call` always returns false. This is a deliberate design choice: Taoki must work universally across all projects and languages without assumptions about which function names are "noise".
+- **No name-based heuristics — AST structure and language stdlib only.** This is a deliberate design principle: Taoki must work universally across all projects and languages.
+  - Call prioritization uses AST node kinds (`identifier`/`scoped_identifier` vs `field_expression`) to order free/scoped calls before method calls. `is_noise_call` always returns false — no calls are filtered by name.
+  - Error detection uses language syntax (`raise`, `throw`, `try_expression`) and stdlib only (`Err()`, `panic!`/`todo!`/`unimplemented!`, Go `errors.New`/`fmt.Errorf`). Namespaced macros are only accepted from `std::`/`core::`. No third-party library patterns (e.g., no `anyhow::bail!`).
+  - Top-level expressions in Python/TypeScript skeletons include all dotted calls regardless of receiver name — no `NOISY_RECEIVERS` filtering.
+  - Tags (`[entry-point]`, `[error-types]`, etc.) are additive metadata that never suppress information.
 - The `ignore` crate handles directory walking (respects .gitignore, global gitignore, and git exclude).
 
 ## Adding a New Language
