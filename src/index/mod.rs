@@ -1153,4 +1153,74 @@ struct Private;
         // private fn should not
         assert!(!functions.iter().any(|f| f.contains("private_fn")), "private fn should be excluded");
     }
+
+    #[test]
+    fn java_enum_with_methods() {
+        let src = r#"
+public enum Role {
+    ADMIN,
+    EDITOR,
+    VIEWER;
+
+    public boolean canEdit() {
+        return this == ADMIN || this == EDITOR;
+    }
+
+    public String label() {
+        return name().toLowerCase();
+    }
+}
+"#;
+        let out = idx(src, Language::Java);
+        // Constants should appear
+        assert!(out.contains("ADMIN"), "missing ADMIN constant");
+        assert!(out.contains("EDITOR"), "missing EDITOR constant");
+        assert!(out.contains("VIEWER"), "missing VIEWER constant");
+        // Methods should appear with signatures
+        assert!(out.contains("public boolean canEdit()"), "missing canEdit method");
+        assert!(out.contains("public String label()"), "missing label method");
+    }
+
+    #[test]
+    fn java_enum_no_methods_unchanged() {
+        let src = r#"
+public enum Color {
+    RED,
+    GREEN,
+    BLUE;
+}
+"#;
+        let out = idx(src, Language::Java);
+        assert!(out.contains("RED"));
+        assert!(out.contains("GREEN"));
+        assert!(out.contains("BLUE"));
+    }
+
+    #[test]
+    fn java_enum_with_fields_and_constructor() {
+        let src = r#"
+public enum Planet {
+    MERCURY(3.303e+23, 2.4397e6),
+    VENUS(4.869e+24, 6.0518e6);
+
+    private final double mass;
+    private final double radius;
+
+    Planet(double mass, double radius) {
+        this.mass = mass;
+        this.radius = radius;
+    }
+
+    public double surfaceGravity() {
+        return 6.67300E-11 * mass / (radius * radius);
+    }
+}
+"#;
+        let out = idx(src, Language::Java);
+        assert!(out.contains("MERCURY"), "missing MERCURY");
+        assert!(out.contains("VENUS"), "missing VENUS");
+        assert!(out.contains("private final double mass"), "missing mass field");
+        assert!(out.contains("Planet(double mass, double radius)"), "missing constructor");
+        assert!(out.contains("public double surfaceGravity()"), "missing method");
+    }
 }
