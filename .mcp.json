@@ -1,6 +1,8 @@
 {
-  "taoki": {
-    "command": "${CLAUDE_PLUGIN_ROOT}/scripts/run.sh",
-    "args": []
+  "mcpServers": {
+    "taoki": {
+      "command": "scripts/run.sh",
+      "args": []
+    }
   }
 }
