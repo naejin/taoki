@@ -5,7 +5,7 @@
   "author": {
     "name": "Daylon"
   },
-  "keywords": ["code-index", "code-map", "tree-sitter"],
+  "keywords": ["radar", "xray", "ripple", "tree-sitter", "code-intelligence"],
   "mcpServers": {
     "taoki": {
       "command": "${CLAUDE_PLUGIN_ROOT}/scripts/run.sh",
