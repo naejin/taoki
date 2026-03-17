@@ -328,7 +328,7 @@ pub(crate) fn detect_module_doc(
 
 pub(crate) fn format_skeleton(
     entries: &[SkeletonEntry],
-    test_lines: &[usize],
+    test_lines: &[(usize, usize)],
     module_doc: Option<(usize, usize)>,
 ) -> String {
     use std::collections::BTreeMap;
@@ -374,8 +374,8 @@ pub(crate) fn format_skeleton(
     }
 
     if !test_lines.is_empty() {
-        let min = *test_lines.iter().min().unwrap();
-        let max = *test_lines.iter().max().unwrap();
+        let min = test_lines.iter().map(|(s, _)| *s).min().unwrap();
+        let max = test_lines.iter().map(|(_, e)| *e).max().unwrap();
         let sep = if out.is_empty() { "" } else { "\n" };
         let _ = writeln!(out, "{sep}tests: {}", line_range(min, max));
     }
@@ -485,7 +485,7 @@ pub fn extract_all(source: &[u8], lang: Language) -> Result<(PublicApi, String),
 fn build_skeleton(root: Node, source: &[u8], extractor: &dyn LanguageExtractor, lang: Language) -> String {
     let module_doc = detect_module_doc(root, source, extractor);
     let mut entries = Vec::new();
-    let mut test_lines: Vec<usize> = Vec::new();
+    let mut test_lines: Vec<(usize, usize)> = Vec::new();
 
     let mut cursor = root.walk();
     for child in root.children(&mut cursor) {
@@ -494,7 +494,7 @@ fn build_skeleton(root: Node, source: &[u8], extractor: &dyn LanguageExtractor, 
         }
         let attrs = extractor.collect_preceding_attrs(child);
         if extractor.is_test_node(child, source, &attrs) {
-            test_lines.push(child.start_position().row + 1);
+            test_lines.push((child.start_position().row + 1, child.end_position().row + 1));
             continue;
         }
         for (i, mut entry) in extractor
@@ -1085,6 +1085,26 @@ def multiline_doc():
         let out = idx(src, Language::Python);
         has(&out, &["empty()"]);
         lacks(&out, &["///"]);
+    }
+
+    #[test]
+    fn test_range_includes_last_test_body() {
+        // Two test functions — the range should span from first start to last END
+        let src = r#"
+def add(a, b):
+    return a + b
+
+def test_add():
+    assert add(1, 2) == 3
+
+def test_subtract():
+    result = add(5, 3)
+    assert result == 2
+"#;
+        let out = idx(src, Language::Python);
+        // test_add starts at line 5, test_subtract ends at line 10
+        // The tests range must include line 10, not stop at line 8
+        has(&out, &["tests: [5-10]"]);
     }
 
     #[test]
