@@ -197,6 +197,11 @@ fn run_project(repo: &RepoEntry) -> ProjectResult {
             continue;
         }
 
+        if index::is_minified(&source) {
+            result.skipped += 1;
+            continue;
+        }
+
         let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
         let lang = match Language::from_extension(ext) {
             Some(l) => l,

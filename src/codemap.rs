@@ -319,6 +319,11 @@ fn compute_tags(
         tags.push("cli".to_string());
     }
 
+    // minified: bundled/minified code with no useful structure
+    if index::is_minified(source) {
+        tags.push("minified".to_string());
+    }
+
     // module-root: specific filenames
     if filename.ends_with("mod.rs")
         || filename.ends_with("__init__.py")

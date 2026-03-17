@@ -8,6 +8,19 @@ pub(crate) mod body;
 
 pub(crate) const FIELD_TRUNCATE_THRESHOLD: usize = 8;
 pub(crate) const MAX_FILE_SIZE: u64 = 2 * 1024 * 1024;
+const MINIFIED_AVG_LINE_LEN: usize = 500;
+
+/// Returns true if the source appears to be minified or bundled code.
+///
+/// Detected by average line length exceeding 500 characters, which indicates
+/// machine-generated code with no useful structure to extract.
+pub fn is_minified(source: &[u8]) -> bool {
+    let newlines = source.iter().filter(|&&b| b == b'\n').count();
+    if newlines == 0 {
+        return source.len() > MINIFIED_AVG_LINE_LEN;
+    }
+    source.len() / newlines > MINIFIED_AVG_LINE_LEN
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum IndexError {
@@ -1222,5 +1235,29 @@ public enum Planet {
         assert!(out.contains("private final double mass"), "missing mass field");
         assert!(out.contains("Planet(double mass, double radius)"), "missing constructor");
         assert!(out.contains("public double surfaceGravity()"), "missing method");
+    }
+
+    #[test]
+    fn minified_single_long_line() {
+        let source = "a".repeat(600);
+        assert!(is_minified(source.as_bytes()));
+    }
+
+    #[test]
+    fn minified_high_avg_line_length() {
+        let line = "a".repeat(600);
+        let source = format!("{}\n{}\n", line, line);
+        assert!(is_minified(source.as_bytes()));
+    }
+
+    #[test]
+    fn not_minified_normal_code() {
+        let source = "fn main() {\n    println!(\"hello\");\n}\n";
+        assert!(!is_minified(source.as_bytes()));
+    }
+
+    #[test]
+    fn not_minified_empty() {
+        assert!(!is_minified(b""));
     }
 }
