@@ -439,13 +439,18 @@ fn extract_error_returns(body: Node, source: &[u8], lang: Language) -> (Vec<Stri
                     }
                 }
                 // Macro invocations: panic!, todo!, unimplemented! (stdlib only)
-                // Also handles namespaced variants like std::panic!
+                // Accepts unqualified (panic!) or std::/core:: namespaced (std::panic!)
                 if node.kind() == "macro_invocation" {
                     if let Some(mac) = node.child(0) {
                         let full_name = node_text(mac, source);
-                        // Extract the leaf name for matching (e.g. "std::panic" -> "panic")
-                        let leaf = full_name.rsplit("::").next().unwrap_or(full_name);
-                        if matches!(leaf, "panic" | "todo" | "unimplemented") {
+                        let is_stdlib_macro = if full_name.contains("::") {
+                            let leaf = full_name.rsplit("::").next().unwrap_or("");
+                            (full_name.starts_with("std::") || full_name.starts_with("core::"))
+                                && matches!(leaf, "panic" | "todo" | "unimplemented")
+                        } else {
+                            matches!(full_name, "panic" | "todo" | "unimplemented")
+                        };
+                        if is_stdlib_macro {
                             let text = format!("{full_name}!");
                             if seen.insert(text.clone()) {
                                 errors.push(text);
@@ -1246,6 +1251,8 @@ class Example {
 fn example() -> Result<()> {
     anyhow::bail!("something went wrong");
     std::panic!("fatal");
+    mycrate::panic!("not stdlib");
+    core::unimplemented!("todo");
     tracing::error!("not an error return");
     Ok(())
 }
@@ -1255,8 +1262,9 @@ fn example() -> Result<()> {
         let fn_node = root.child(0).unwrap();
         let body = fn_node.child_by_field_name("body").unwrap();
         let (errors, _) = extract_error_returns(body, &bytes, Language::Rust);
-        // Only stdlib macros detected — anyhow::bail! is library-specific, not matched
-        assert_eq!(errors, vec!["std::panic!"]);
+        // Only stdlib (std::/core::) and unqualified macros detected
+        // anyhow::bail! and mycrate::panic! are not matched
+        assert_eq!(errors, vec!["std::panic!", "core::unimplemented!"]);
     }
 
     // --- No name-based filtering: purely structural ---
