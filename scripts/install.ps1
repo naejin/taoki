@@ -1,7 +1,10 @@
 $ErrorActionPreference = "Stop"
 
 $Repo = "naejin/taoki"
-$InstallDir = Join-Path $env:USERPROFILE ".claude\plugins\taoki"
+$MarketplaceDir = Join-Path $env:USERPROFILE ".claude\plugins\taoki-local"
+$PluginDir = Join-Path $MarketplaceDir "taoki"
+$MarketplaceName = "taoki-local"
+$PluginName = "taoki"
 
 function Write-Info($msg) { Write-Host "taoki: $msg" }
 function Write-Err($msg) { Write-Host "error: $msg" -ForegroundColor Red }
@@ -43,6 +46,9 @@ if (-not $Version) {
     }
 }
 
+# Strip leading 'v' for version number
+$VersionNum = $Version -replace '^v', ''
+
 Write-Info "Installing taoki $Version (windows-x86_64)..."
 
 # Download
@@ -80,23 +86,31 @@ try {
     $StagingDir = Join-Path $TmpDir "staging"
     Expand-Archive -Path $ArtifactPath -DestinationPath $StagingDir -Force
 
-    # Atomic swap
-    $ParentDir = Split-Path $InstallDir -Parent
-    if (-not (Test-Path $ParentDir)) {
-        New-Item -ItemType Directory -Path $ParentDir -Force | Out-Null
+    # Install plugin into local marketplace structure
+    $MarketplacePluginDir = Join-Path $MarketplaceDir ".claude-plugin"
+    if (-not (Test-Path $MarketplacePluginDir)) {
+        New-Item -ItemType Directory -Path $MarketplacePluginDir -Force | Out-Null
     }
-    if (Test-Path $InstallDir) {
-        $BackupPath = "${InstallDir}.bak"
+
+    # Atomic swap the plugin directory
+    if (Test-Path $PluginDir) {
+        $BackupPath = "${PluginDir}.bak"
         if (Test-Path $BackupPath) { Remove-Item -Recurse -Force $BackupPath }
-        Move-Item -Path $InstallDir -Destination $BackupPath
+        Move-Item -Path $PluginDir -Destination $BackupPath
     }
-    Move-Item -Path (Join-Path $StagingDir "taoki") -Destination $InstallDir
-    if (Test-Path "${InstallDir}.bak") {
-        Remove-Item -Recurse -Force "${InstallDir}.bak"
+    Move-Item -Path (Join-Path $StagingDir "taoki") -Destination $PluginDir
+    if (Test-Path "${PluginDir}.bak") {
+        Remove-Item -Recurse -Force "${PluginDir}.bak"
+    }
+
+    # Remove stale .mcp.json if present (older releases shipped it)
+    $StaleConfig = Join-Path $PluginDir ".mcp.json"
+    if (Test-Path $StaleConfig) {
+        Remove-Item -Force $StaleConfig
     }
 
     # Verify binary
-    $Binary = Join-Path $InstallDir "target\release\taoki.exe"
+    $Binary = Join-Path $PluginDir "target\release\taoki.exe"
     try {
         $VersionOutput = & $Binary --version 2>&1
         if ($LASTEXITCODE -ne 0) { throw "Binary exited with code $LASTEXITCODE" }
@@ -106,37 +120,44 @@ try {
         exit 1
     }
 
-    # Remove stale .mcp.json if present (older releases shipped it, causing conflicts)
-    $StaleConfig = Join-Path $InstallDir ".mcp.json"
-    if (Test-Path $StaleConfig) {
-        Remove-Item -Force $StaleConfig
-        Write-Info "Removed stale .mcp.json (plugin.json is the MCP config source)."
-    }
+    # Write marketplace manifest
+    $MarketplaceJson = @{
+        name = $MarketplaceName
+        owner = @{ name = "naejin" }
+        plugins = @(
+            @{
+                name = $PluginName
+                description = "Code indexing and structural mapping for Claude Code"
+                version = $VersionNum
+                source = "./$PluginName"
+            }
+        )
+    } | ConvertTo-Json -Depth 3
+    Set-Content -Path (Join-Path $MarketplacePluginDir "marketplace.json") -Value $MarketplaceJson
 
-    # Register MCP server
-    $RunCmd = Join-Path $InstallDir "scripts\run.cmd"
+    # Register plugin with Claude Code
     $ClaudePath = Get-Command claude -ErrorAction SilentlyContinue
     if ($ClaudePath) {
-        # Skip if already registered via a plugin marketplace
-        $mcpList = & claude mcp list 2>$null
-        if ($mcpList -match "plugin:.*taoki") {
-            Write-Info "MCP server already registered via plugin. Skipping."
+        # Clean up legacy MCP-only registration from older install scripts
+        try { & claude mcp remove taoki -s user 2>$null } catch { }
+
+        $pluginList = & claude plugin list 2>$null
+        if ($pluginList -match "$PluginName@$MarketplaceName") {
+            # Already installed — update
+            Write-Info "Updating plugin..."
+            & claude plugin marketplace update $MarketplaceName
+            & claude plugin update "$PluginName@$MarketplaceName"
         } else {
-            Write-Info "Registering MCP server with Claude Code..."
-            try {
-                & claude mcp remove taoki -s user 2>$null
-            } catch { }
-            try {
-                & claude mcp add -s user taoki -- $RunCmd
-                Write-Info "MCP server registered successfully."
-            } catch {
-                Write-Err "MCP registration failed. Register manually:"
-                Write-Err "  claude mcp add -s user taoki -- $RunCmd"
-            }
+            # First install — add marketplace and install
+            Write-Info "Registering plugin with Claude Code..."
+            try { & claude plugin marketplace remove $MarketplaceName 2>$null } catch { }
+            & claude plugin marketplace add $MarketplaceDir
+            & claude plugin install "$PluginName@$MarketplaceName"
         }
     } else {
-        Write-Info "Claude Code not found on PATH. Register the MCP server manually:"
-        Write-Info "  claude mcp add -s user taoki -- $RunCmd"
+        Write-Info "Claude Code not found on PATH. Register manually after installing Claude Code:"
+        Write-Info "  claude plugin marketplace add $MarketplaceDir"
+        Write-Info "  claude plugin install $PluginName@$MarketplaceName"
     }
 
     Write-Host ""

@@ -2,7 +2,10 @@
 set -euo pipefail
 
 REPO="naejin/taoki"
-INSTALL_DIR="$HOME/.claude/plugins/taoki"
+MARKETPLACE_DIR="$HOME/.claude/plugins/taoki-local"
+PLUGIN_DIR="$MARKETPLACE_DIR/taoki"
+MARKETPLACE_NAME="taoki-local"
+PLUGIN_NAME="taoki"
 
 # Colors (only if terminal supports it)
 if [ -t 1 ]; then
@@ -80,6 +83,9 @@ if [ -z "$VERSION" ]; then
   fi
 fi
 
+# Strip leading 'v' for version number
+VERSION_NUM="${VERSION#v}"
+
 info "Installing taoki ${VERSION} (${PLATFORM}-${ARCH})..."
 
 # Download
@@ -128,49 +134,66 @@ STAGING="$TMPDIR_INSTALL/staging"
 mkdir -p "$STAGING"
 tar xzf "$TMPDIR_INSTALL/$ARTIFACT" -C "$STAGING"
 
-# Atomic swap into install directory
-mkdir -p "$(dirname "$INSTALL_DIR")"
-if [ -d "$INSTALL_DIR" ]; then
-  mv "$INSTALL_DIR" "${INSTALL_DIR}.bak"
+# Install plugin into local marketplace structure
+mkdir -p "$MARKETPLACE_DIR/.claude-plugin"
+
+# Atomic swap the plugin directory
+if [ -d "$PLUGIN_DIR" ]; then
+  mv "$PLUGIN_DIR" "${PLUGIN_DIR}.bak"
 fi
-mv "$STAGING/taoki" "$INSTALL_DIR"
-rm -rf "${INSTALL_DIR}.bak"
+mv "$STAGING/taoki" "$PLUGIN_DIR"
+rm -rf "${PLUGIN_DIR}.bak"
+
+# Remove stale .mcp.json if present (older releases shipped it)
+rm -f "$PLUGIN_DIR/.mcp.json"
 
 # Verify binary
-if ! "$INSTALL_DIR/target/release/taoki" --version >/dev/null 2>&1; then
+if ! "$PLUGIN_DIR/target/release/taoki" --version >/dev/null 2>&1; then
   error "Binary verification failed. The download may be corrupted."
   exit 1
 fi
 
-INSTALLED_VERSION=$("$INSTALL_DIR/target/release/taoki" --version 2>/dev/null || echo "unknown")
+INSTALLED_VERSION=$("$PLUGIN_DIR/target/release/taoki" --version 2>/dev/null || echo "unknown")
 info "Installed ${INSTALLED_VERSION}"
 
-# Remove stale .mcp.json from plugin directory if present (older releases shipped it,
-# causing conflicts with plugin.json mcpServers). plugin.json is the single source of truth.
-if [ -f "$INSTALL_DIR/.mcp.json" ]; then
-  rm -f "$INSTALL_DIR/.mcp.json"
-  info "Removed stale .mcp.json (plugin.json is the MCP config source)."
-fi
+# Write marketplace manifest (version must match plugin.json)
+cat > "$MARKETPLACE_DIR/.claude-plugin/marketplace.json" <<MKEOF
+{
+  "name": "${MARKETPLACE_NAME}",
+  "owner": {"name": "naejin"},
+  "plugins": [
+    {
+      "name": "${PLUGIN_NAME}",
+      "description": "Code indexing and structural mapping for Claude Code",
+      "version": "${VERSION_NUM}",
+      "source": "./${PLUGIN_NAME}"
+    }
+  ]
+}
+MKEOF
 
-# Register MCP server with Claude Code
+# Register plugin with Claude Code
 if command -v claude >/dev/null 2>&1; then
-  # Skip if already registered via a plugin marketplace
-  if claude mcp list 2>/dev/null | grep -q "plugin:.*taoki"; then
-    info "MCP server already registered via plugin. Skipping."
+  # Clean up legacy MCP-only registration from older install scripts
+  claude mcp remove taoki -s user 2>/dev/null || true
+
+  if claude plugin list 2>/dev/null | grep -q "${PLUGIN_NAME}@${MARKETPLACE_NAME}"; then
+    # Already installed — update
+    info "Updating plugin..."
+    claude plugin marketplace update "$MARKETPLACE_NAME" 2>&1
+    claude plugin update "${PLUGIN_NAME}@${MARKETPLACE_NAME}" 2>&1
   else
-    info "Registering MCP server with Claude Code..."
-    # Remove existing user-level registration if present (idempotent reinstall)
-    claude mcp remove taoki -s user 2>/dev/null || true
-    if claude mcp add -s user taoki -- "$INSTALL_DIR/scripts/run.sh" 2>&1; then
-      info "MCP server registered successfully."
-    else
-      error "MCP registration failed. Register manually:"
-      error "  claude mcp add -s user taoki -- $INSTALL_DIR/scripts/run.sh"
-    fi
+    # First install — add marketplace and install
+    info "Registering plugin with Claude Code..."
+    # Remove marketplace if it exists (idempotent)
+    claude plugin marketplace remove "$MARKETPLACE_NAME" 2>/dev/null || true
+    claude plugin marketplace add "$MARKETPLACE_DIR" 2>&1
+    claude plugin install "${PLUGIN_NAME}@${MARKETPLACE_NAME}" 2>&1
   fi
 else
-  info "Claude Code not found on PATH. Register the MCP server manually:"
-  info "  claude mcp add -s user taoki -- $INSTALL_DIR/scripts/run.sh"
+  info "Claude Code not found on PATH. Register manually after installing Claude Code:"
+  info "  claude plugin marketplace add $MARKETPLACE_DIR"
+  info "  claude plugin install ${PLUGIN_NAME}@${MARKETPLACE_NAME}"
 fi
 
 echo ""
