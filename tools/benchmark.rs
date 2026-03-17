@@ -184,7 +184,7 @@ fn run_project(repo: &RepoEntry) -> ProjectResult {
     };
 
     for file in &files {
-        let source = match fs::read(file) {
+        let file_size = match fs::metadata(file).map(|m| m.len()) {
             Ok(s) => s,
             Err(_) => {
                 result.skipped += 1;
@@ -192,10 +192,18 @@ fn run_project(repo: &RepoEntry) -> ProjectResult {
             }
         };
 
-        if source.len() as u64 > MAX_FILE_SIZE {
+        if file_size > MAX_FILE_SIZE {
             result.skipped += 1;
             continue;
         }
+
+        let source = match fs::read(file) {
+            Ok(s) => s,
+            Err(_) => {
+                result.skipped += 1;
+                continue;
+            }
+        };
 
         if index::is_minified(&source) {
             result.skipped += 1;
@@ -246,6 +254,10 @@ fn inject_content(content: &str, table: &str) -> Result<String, String> {
     let end = content
         .find(BENCH_END)
         .ok_or_else(|| format!("{} marker not found", BENCH_END))?;
+
+    if end <= start {
+        return Err(format!("{} appears before {}", BENCH_END, BENCH_START));
+    }
 
     let before = &content[..start + BENCH_START.len()];
     let after = &content[end..];
@@ -555,5 +567,11 @@ mod tests {
     #[test]
     fn inject_content_errors_on_missing_markers() {
         assert!(inject_content("no markers here", "table").is_err());
+    }
+
+    #[test]
+    fn inject_content_errors_on_reversed_markers() {
+        let content = "before\n<!-- BENCH:END -->\nold\n<!-- BENCH:START -->\nafter";
+        assert!(inject_content(content, "table").is_err());
     }
 }
