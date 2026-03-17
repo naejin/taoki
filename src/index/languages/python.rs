@@ -102,10 +102,6 @@ impl PythonExtractor {
         ))
     }
 
-    const NOISY_RECEIVERS: &'static [&'static str] = &[
-        "console", "process", "logging", "log", "logger", "Math", "Object", "Array", "JSON",
-    ];
-
     fn extract_expression_assignment(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
         let left = node.child(0)?;
         let name = node_text(left, source);
@@ -123,10 +119,6 @@ impl PythonExtractor {
         let func = node.child_by_field_name("function")?;
         if func.kind() != "attribute" {
             return None; // Not a dotted call — skip bare calls like print(), run()
-        }
-        let receiver = func.child_by_field_name("object").map(|n| node_text(n, source)).unwrap_or("");
-        if Self::NOISY_RECEIVERS.contains(&receiver) {
-            return None;
         }
         let text = truncate(node_text(node, source).trim(), 80);
         let parent = node.parent()?;
@@ -439,10 +431,12 @@ if __name__ == '__main__':
         assert!(out.contains("consts:"), "missing consts section in:\n{out}");
         assert!(out.contains("MAX_SIZE"), "missing MAX_SIZE in:\n{out}");
 
-        // Noise should NOT appear
-        assert!(!out.contains("print('hello')"), "print() should be filtered in:\n{out}");
-        assert!(!out.contains("  run()"), "run() should be filtered in:\n{out}");
-        assert!(!out.contains("logging.info"), "logging.info should be filtered in:\n{out}");
+        // Bare calls (not dotted) are not captured as expressions
+        assert!(!out.contains("print('hello')"), "print() should not appear in:\n{out}");
+        assert!(!out.contains("  run()"), "run() should not appear in:\n{out}");
+
+        // Dotted calls are captured regardless of receiver — no name-based filtering
+        assert!(out.contains("logging.info"), "logging.info should appear (no name filtering):\n{out}");
 
         // if __name__ == '__main__' should be collapsed with line range
         assert!(out.contains("if __name__"), "missing if __name__ block in:\n{out}");

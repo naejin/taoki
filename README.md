@@ -71,6 +71,7 @@ external:
 - **Test collapsing** — test code detected and collapsed across all supported languages
 - **Fast caching** — blake3 content hashing with file-level locking; repeated calls are near-instant
 - **Tree-sitter parsing** — accurate, fast, no regex heuristics
+- **Universal** — no name-based filtering or library-specific assumptions. Works the same on any codebase. Detection uses AST structure and language stdlib only
 - **6 languages** — Rust, Python, TypeScript, JavaScript, Go, Java
 
 ## Install

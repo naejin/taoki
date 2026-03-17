@@ -194,10 +194,6 @@ impl TsJsExtractor {
         None
     }
 
-    const NOISY_RECEIVERS: &'static [&'static str] = &[
-        "console", "process", "logging", "log", "logger", "Math", "Object", "Array", "JSON",
-    ];
-
     fn extract_assignment_expression(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
         let child = node.child(0)?;
         if child.kind() != "assignment_expression" {
@@ -214,10 +210,6 @@ impl TsJsExtractor {
         }
         let func = child.child_by_field_name("function")?;
         if func.kind() != "member_expression" {
-            return None;
-        }
-        let receiver = func.child_by_field_name("object").map(|n| node_text(n, source)).unwrap_or("");
-        if Self::NOISY_RECEIVERS.contains(&receiver) {
             return None;
         }
         let text = truncate(node_text(child, source).trim(), 80);
@@ -439,9 +431,9 @@ export default class App {}
         assert!(out.contains("app.get"), "missing app.get in:\n{out}");
         assert!(out.contains("router.post"), "missing router.post in:\n{out}");
 
-        // Noise should NOT appear
-        assert!(!out.contains("console.log"), "console.log should be filtered in:\n{out}");
-        assert!(!out.contains("process.exit"), "process.exit should be filtered in:\n{out}");
+        // Dotted calls are captured regardless of receiver — no name-based filtering
+        assert!(out.contains("console.log"), "console.log should appear (no name filtering):\n{out}");
+        assert!(out.contains("process.exit"), "process.exit should appear (no name filtering):\n{out}");
 
         // export default should appear
         assert!(out.contains("App"), "missing export default class App in:\n{out}");
