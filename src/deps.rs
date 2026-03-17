@@ -444,19 +444,36 @@ fn resolve_python(import_path: &str, current_file: &str, all_files: &[String]) -
         }
         None
     } else {
-        // Absolute import: replace . with /
-        // Try common source root layouts: flat (canopi/...), src-layout (src/canopi/...), etc.
+        // Absolute import: discover source root via __init__.py — the Python-defined
+        // package marker. No hardcoded directory names.
         let path_str = import_path.replace('.', "/");
-        let source_roots = ["", "src/", "lib/", "app/", "python/", "source/"];
-        for root in &source_roots {
-            let candidates = [
-                format!("{root}{path_str}.py"),
-                format!("{root}{path_str}/__init__.py"),
-            ];
-            for candidate in &candidates {
-                if all_files.iter().any(|f| f == candidate) {
-                    return Some(candidate.clone());
+        let top_level = import_path.split('.').next()?;
+        let init_pattern = format!("{top_level}/__init__.py");
+
+        // Find source root by locating the top-level package's __init__.py
+        for file in all_files {
+            if file == &init_pattern || file.ends_with(&format!("/{init_pattern}")) {
+                let prefix = &file[..file.len() - init_pattern.len()];
+                let candidates = [
+                    format!("{prefix}{path_str}.py"),
+                    format!("{prefix}{path_str}/__init__.py"),
+                ];
+                for candidate in &candidates {
+                    if all_files.iter().any(|f| f == candidate) {
+                        return Some(candidate.clone());
+                    }
                 }
+            }
+        }
+
+        // Fallback: flat layout for namespace packages (no __init__.py)
+        let candidates = [
+            format!("{path_str}.py"),
+            format!("{path_str}/__init__.py"),
+        ];
+        for candidate in &candidates {
+            if all_files.iter().any(|f| f == candidate) {
+                return Some(candidate.clone());
             }
         }
         None
@@ -1243,7 +1260,10 @@ mod tests {
     #[test]
     fn python_absolute_import_package_resolves() {
         // Import resolves to __init__.py when no direct .py match
-        let all_files = vec!["src/canopi/enrichment/__init__.py".to_string()];
+        let all_files = vec![
+            "src/canopi/__init__.py".to_string(),
+            "src/canopi/enrichment/__init__.py".to_string(),
+        ];
         let result = resolve_import(
             "canopi.enrichment",
             Language::Python,
@@ -1256,6 +1276,40 @@ mod tests {
             result,
             Some("src/canopi/enrichment/__init__.py".to_string())
         );
+    }
+
+    #[test]
+    fn python_absolute_import_custom_layout_resolves() {
+        // Source root is discovered via __init__.py, not hardcoded directory names.
+        // Works for any layout — "backend/", "code/", or any arbitrary prefix.
+        let all_files = vec![
+            "backend/mypackage/__init__.py".to_string(),
+            "backend/mypackage/utils.py".to_string(),
+        ];
+        let result = resolve_import(
+            "mypackage.utils",
+            Language::Python,
+            "backend/mypackage/main.py",
+            &all_files,
+            None,
+            None,
+        );
+        assert_eq!(result, Some("backend/mypackage/utils.py".to_string()));
+    }
+
+    #[test]
+    fn python_namespace_package_flat_resolves() {
+        // Namespace packages (no __init__.py) resolve via flat layout fallback
+        let all_files = vec!["mylib/core.py".to_string()];
+        let result = resolve_import(
+            "mylib.core",
+            Language::Python,
+            "app.py",
+            &all_files,
+            None,
+            None,
+        );
+        assert_eq!(result, Some("mylib/core.py".to_string()));
     }
 
     #[test]
