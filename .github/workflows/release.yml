@@ -98,7 +98,7 @@ jobs:
           mkdir -p staging/taoki/target/release
           cp target/${{ matrix.target }}/release/taoki.exe staging/taoki/target/release/
           # Write Windows-specific .mcp.json pointing to run.cmd instead of run.sh
-          printf '{\n  "mcpServers": {\n    "taoki": {\n      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/run.cmd",\n      "args": []\n    }\n  }\n}\n' > staging/taoki/.mcp.json
+          printf '{\n  "taoki": {\n    "command": "${CLAUDE_PLUGIN_ROOT}/scripts/run.cmd",\n    "args": []\n  }\n}\n' > staging/taoki/.mcp.json
           cp -r .claude-plugin staging/taoki/
           cp -r commands staging/taoki/
           cp -r skills staging/taoki/
