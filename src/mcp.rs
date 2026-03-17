@@ -82,7 +82,7 @@ pub fn tool_definitions() -> Value {
         "tools": [
             {
                 "name": "index",
-                "description": "Return a compact structural skeleton of a source file: imports, type definitions, function signatures, and their line numbers. ~70-90% fewer tokens than reading the full file. Use this to understand a file's architecture before reading specific sections with the Read tool. For multiple files, prefer code_map with the files parameter instead. Supports: Rust, Python, TypeScript, JavaScript, Go, Java.",
+                "description": "Return a compact structural skeleton of a source file: imports, type definitions, function signatures, and their line numbers. ~70-90% fewer tokens than reading the full file. Use this to understand a file's architecture before reading specific sections with the Read tool. For multiple files at once, use code_map with the files parameter. Supports: Rust, Python, TypeScript, JavaScript, Go, Java.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -96,7 +96,7 @@ pub fn tool_definitions() -> Value {
             },
             {
                 "name": "code_map",
-                "description": "Build an incremental structural map of a codebase. Returns one line per file with public types and public function signatures. Use this FIRST when you need to understand a repository's structure or find which files are relevant to a task. Pass `files` (array of relative paths) to include full structural skeletons inline for specific files — use this after identifying files of interest to avoid separate index calls. Results are cached (blake3 hash) so repeated calls are near-instant. Supports glob patterns to narrow scope.",
+                "description": "Two modes depending on whether `files` is provided. WITHOUT files: build a structural map of the codebase — one line per file with public types, function signatures, and heuristic tags. Use this first to orient in an unfamiliar repo or find which files are relevant. Results are cached (blake3) so repeated calls are near-instant. Supports globs to narrow scope. WITH files: batch skeleton mode — returns full structural skeletons for the listed files only, no overview. Equivalent to calling index on each file in one round trip. Use this when you already know which files you need.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -112,7 +112,7 @@ pub fn tool_definitions() -> Value {
                         "files": {
                             "type": "array",
                             "items": { "type": "string" },
-                            "description": "Optional list of relative file paths to include full structural skeletons for. Use after an initial code_map call to get detailed structure for files of interest."
+                            "description": "List of relative file paths to return skeletons for. When provided, switches to batch skeleton mode: returns only the skeletons for these files with no repo overview."
                         }
                     },
                     "required": ["path"]
