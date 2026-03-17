@@ -328,7 +328,7 @@ pub(crate) fn detect_module_doc(
 
 pub(crate) fn format_skeleton(
     entries: &[SkeletonEntry],
-    test_lines: &[usize],
+    test_lines: &[(usize, usize)],
     module_doc: Option<(usize, usize)>,
 ) -> String {
     use std::collections::BTreeMap;
@@ -374,8 +374,8 @@ pub(crate) fn format_skeleton(
     }
 
     if !test_lines.is_empty() {
-        let min = *test_lines.iter().min().unwrap();
-        let max = *test_lines.iter().max().unwrap();
+        let min = test_lines.iter().map(|(s, _)| *s).min().unwrap();
+        let max = test_lines.iter().map(|(_, e)| *e).max().unwrap();
         let sep = if out.is_empty() { "" } else { "\n" };
         let _ = writeln!(out, "{sep}tests: {}", line_range(min, max));
     }
@@ -485,7 +485,7 @@ pub fn extract_all(source: &[u8], lang: Language) -> Result<(PublicApi, String),
 fn build_skeleton(root: Node, source: &[u8], extractor: &dyn LanguageExtractor, lang: Language) -> String {
     let module_doc = detect_module_doc(root, source, extractor);
     let mut entries = Vec::new();
-    let mut test_lines: Vec<usize> = Vec::new();
+    let mut test_lines: Vec<(usize, usize)> = Vec::new();
 
     let mut cursor = root.walk();
     for child in root.children(&mut cursor) {
@@ -494,7 +494,7 @@ fn build_skeleton(root: Node, source: &[u8], extractor: &dyn LanguageExtractor, 
         }
         let attrs = extractor.collect_preceding_attrs(child);
         if extractor.is_test_node(child, source, &attrs) {
-            test_lines.push(child.start_position().row + 1);
+            test_lines.push((child.start_position().row + 1, child.end_position().row + 1));
             continue;
         }
         for (i, mut entry) in extractor
@@ -1088,6 +1088,26 @@ def multiline_doc():
     }
 
     #[test]
+    fn test_range_includes_last_test_body() {
+        // Two test functions — the range should span from first start to last END
+        let src = r#"
+def add(a, b):
+    return a + b
+
+def test_add():
+    assert add(1, 2) == 3
+
+def test_subtract():
+    result = add(5, 3)
+    assert result == 2
+"#;
+        let out = idx(src, Language::Python);
+        // test_add starts at line 5, test_subtract ends at line 10
+        // The tests range must include line 10, not stop at line 8
+        has(&out, &["tests: [5-10]"]);
+    }
+
+    #[test]
     fn doc_comment_truncated_at_120() {
         let long_doc = format!("/// {}", "a".repeat(130));
         let src = format!("{long_doc}\npub fn long_doc() {{}}\n");
@@ -1101,5 +1121,106 @@ def multiline_doc():
                     "doc too long ({} chars): {doc_content}", doc_content.chars().count());
             }
         }
+    }
+
+    #[test]
+    fn rust_pub_crate_in_public_api() {
+        let src = r#"
+pub(crate) struct Foo {
+    pub(crate) field: i32,
+}
+
+pub(crate) fn bar() -> bool { true }
+
+pub struct Visible;
+
+pub(super) fn baz() -> i32 { 42 }
+
+fn private_fn() {}
+
+struct Private;
+"#;
+        let (types, functions) =
+            extract_public_api(src.as_bytes(), Language::Rust).unwrap();
+        // pub(crate) items should now appear
+        assert!(types.contains(&"Foo".to_string()), "missing pub(crate) struct Foo");
+        assert!(types.contains(&"Visible".to_string()), "missing pub struct Visible");
+        assert!(!types.contains(&"Private".to_string()), "private struct should be excluded");
+        // pub(crate) fn should appear
+        assert!(functions.iter().any(|f| f.contains("bar")), "missing pub(crate) fn bar");
+        // pub(super) fn should also appear
+        assert!(functions.iter().any(|f| f.contains("baz")), "missing pub(super) fn baz");
+        // private fn should not
+        assert!(!functions.iter().any(|f| f.contains("private_fn")), "private fn should be excluded");
+    }
+
+    #[test]
+    fn java_enum_with_methods() {
+        let src = r#"
+public enum Role {
+    ADMIN,
+    EDITOR,
+    VIEWER;
+
+    public boolean canEdit() {
+        return this == ADMIN || this == EDITOR;
+    }
+
+    public String label() {
+        return name().toLowerCase();
+    }
+}
+"#;
+        let out = idx(src, Language::Java);
+        // Constants should appear
+        assert!(out.contains("ADMIN"), "missing ADMIN constant");
+        assert!(out.contains("EDITOR"), "missing EDITOR constant");
+        assert!(out.contains("VIEWER"), "missing VIEWER constant");
+        // Methods should appear with signatures
+        assert!(out.contains("public boolean canEdit()"), "missing canEdit method");
+        assert!(out.contains("public String label()"), "missing label method");
+    }
+
+    #[test]
+    fn java_enum_no_methods_unchanged() {
+        let src = r#"
+public enum Color {
+    RED,
+    GREEN,
+    BLUE;
+}
+"#;
+        let out = idx(src, Language::Java);
+        assert!(out.contains("RED"));
+        assert!(out.contains("GREEN"));
+        assert!(out.contains("BLUE"));
+    }
+
+    #[test]
+    fn java_enum_with_fields_and_constructor() {
+        let src = r#"
+public enum Planet {
+    MERCURY(3.303e+23, 2.4397e6),
+    VENUS(4.869e+24, 6.0518e6);
+
+    private final double mass;
+    private final double radius;
+
+    Planet(double mass, double radius) {
+        this.mass = mass;
+        this.radius = radius;
+    }
+
+    public double surfaceGravity() {
+        return 6.67300E-11 * mass / (radius * radius);
+    }
+}
+"#;
+        let out = idx(src, Language::Java);
+        assert!(out.contains("MERCURY"), "missing MERCURY");
+        assert!(out.contains("VENUS"), "missing VENUS");
+        assert!(out.contains("private final double mass"), "missing mass field");
+        assert!(out.contains("Planet(double mass, double radius)"), "missing constructor");
+        assert!(out.contains("public double surfaceGravity()"), "missing method");
     }
 }

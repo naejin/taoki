@@ -25,7 +25,7 @@ pub struct DepsGraph {
     pub graph: HashMap<String, FileImports>,
 }
 
-pub const DEPS_VERSION: u32 = 1;
+pub const DEPS_VERSION: u32 = 2;
 const DEPS_FILE: &str = "deps.json";
 const DEPS_DIR: &str = ".cache/taoki";
 
@@ -318,9 +318,15 @@ pub fn resolve_import(
     lang: Language,
     current_file: &str,
     all_files: &[String],
+    crate_map: Option<&HashMap<String, PathBuf>>,
 ) -> Option<String> {
     match lang {
-        Language::Rust => resolve_rust(import_path, all_files),
+        Language::Rust => match crate_map {
+            Some(map) if !map.is_empty() => {
+                resolve_rust_workspace(import_path, current_file, all_files, map)
+            }
+            _ => resolve_rust(import_path, all_files),
+        },
         Language::Python => resolve_python(import_path, current_file, all_files),
         Language::TypeScript | Language::JavaScript => {
             resolve_ts(import_path, current_file, all_files)
@@ -348,6 +354,54 @@ fn resolve_rust(import_path: &str, all_files: &[String]) -> Option<String> {
         for candidate in &candidates {
             if all_files.iter().any(|f| f == candidate) {
                 return Some(candidate.clone());
+            }
+        }
+    }
+    None
+}
+
+fn resolve_rust_workspace(
+    import_path: &str,
+    current_file: &str,
+    all_files: &[String],
+    crate_map: &HashMap<String, PathBuf>,
+) -> Option<String> {
+    if let Some(rest) = import_path.strip_prefix("crate::") {
+        // crate:: import — resolve relative to the current file's crate
+        let crate_root = find_crate_root(current_file, crate_map);
+        let base = crate_root
+            .map(|(_, dir)| dir.to_path_buf())
+            .unwrap_or_default();
+        resolve_within_crate(rest, &base, all_files)
+    } else {
+        // Try cross-crate: first segment might be a workspace crate
+        let first_segment = import_path.split("::").next()?;
+        if let Some(dir) = crate_map.get(first_segment) {
+            let rest = import_path.strip_prefix(first_segment)?.strip_prefix("::")?;
+            resolve_within_crate(rest, dir, all_files)
+        } else {
+            None // External dependency
+        }
+    }
+}
+
+/// Resolve a `::` path within a crate's directory.
+/// Tries `{base}/src/{path}.rs`, `{base}/src/{path}/mod.rs`,
+/// `{base}/{path}.rs`, and `{base}/{path}/mod.rs` (for crates not using `src/` layout).
+fn resolve_within_crate(rest: &str, base: &Path, all_files: &[String]) -> Option<String> {
+    let parts: Vec<&str> = rest.split("::").collect();
+    for take in (1..=parts.len()).rev() {
+        let path_str = parts[..take].join("/");
+        let candidates = [
+            base.join("src").join(format!("{path_str}.rs")),
+            base.join("src").join(&path_str).join("mod.rs"),
+            base.join(format!("{path_str}.rs")),
+            base.join(&path_str).join("mod.rs"),
+        ];
+        for candidate in &candidates {
+            let candidate_str = candidate.to_string_lossy().replace('\\', "/");
+            if all_files.iter().any(|f| f == &candidate_str) {
+                return Some(candidate_str);
             }
         }
     }
@@ -478,6 +532,7 @@ fn normalize_path(path: &Path) -> PathBuf {
 /// Build a dependency graph from a list of files under `root`.
 pub fn build_deps_graph(root: &Path, files: &[PathBuf]) -> DepsGraph {
     let mut graph: HashMap<String, FileImports> = HashMap::new();
+    let crate_map = build_crate_map(root);
 
     // Build list of relative paths (as strings) for resolution
     let all_files: Vec<String> = files
@@ -513,7 +568,13 @@ pub fn build_deps_graph(root: &Path, files: &[PathBuf]) -> DepsGraph {
         let mut imports = Vec::new();
 
         for (import_path, symbols) in raw_imports {
-            let resolved = resolve_import(&import_path, lang, &rel, &all_files);
+            let resolved = resolve_import(
+                &import_path,
+                lang,
+                &rel,
+                &all_files,
+                if lang == Language::Rust { Some(&crate_map) } else { None },
+            );
             let external = resolved.is_none();
             let path = resolved.unwrap_or_else(|| import_path.clone());
             imports.push(ImportInfo {
@@ -549,6 +610,10 @@ pub fn query_deps(graph: &DepsGraph, file: &str) -> String {
                 .collect()
         })
         .unwrap_or_default();
+
+    let mut depends_on = depends_on;
+    depends_on.sort();
+    depends_on.dedup();
 
     out.push_str("depends_on:\n");
     for dep in &depends_on {
@@ -648,6 +713,90 @@ pub fn save_deps_cache(root: &Path, graph: &DepsGraph) {
     let _ = lock_file.unlock();
 }
 
+/// Build a map of crate names to their directories by scanning for Cargo.toml files.
+/// Only reads the [package] section to extract the crate name, ignoring [[bin]], [lib], etc.
+pub(crate) fn build_crate_map(root: &Path) -> HashMap<String, PathBuf> {
+    let mut map = HashMap::new();
+    let walker = ignore::WalkBuilder::new(root).build();
+    for entry in walker.flatten() {
+        if entry.file_name() != "Cargo.toml" {
+            continue;
+        }
+        let path = entry.path();
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        if let Some(name) = extract_package_name(&content) {
+            let crate_name = name.replace('-', "_");
+            let dir = path.parent().unwrap_or(Path::new(""));
+            let rel = dir.strip_prefix(root).unwrap_or(dir);
+            map.insert(crate_name, rel.to_path_buf());
+        }
+    }
+    map
+}
+
+/// Extract the crate name from the [package] section of a Cargo.toml.
+/// Scopes to [package] only — ignores name fields in [[bin]], [dependencies], etc.
+fn extract_package_name(content: &str) -> Option<String> {
+    let mut in_package = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[package]" {
+            in_package = true;
+            continue;
+        }
+        if trimmed.starts_with('[') {
+            if in_package {
+                break; // Left [package] section
+            }
+            continue;
+        }
+        if in_package {
+            // Match: name = "crate-name"
+            if let Some(rest) = trimmed.strip_prefix("name") {
+                let rest = rest.trim_start();
+                if let Some(rest) = rest.strip_prefix('=') {
+                    let rest = rest.trim();
+                    if let Some(rest) = rest.strip_prefix('"') {
+                        if let Some(name) = rest.strip_suffix('"') {
+                            return Some(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Find the crate that contains a given file path.
+/// Returns (crate_name, crate_dir) for the longest-prefix match.
+pub(crate) fn find_crate_root<'a>(
+    file: &str,
+    crate_map: &'a HashMap<String, PathBuf>,
+) -> Option<(&'a str, &'a Path)> {
+    let mut best: Option<(&str, &Path)> = None;
+    let mut best_len = 0;
+    for (name, dir) in crate_map {
+        let dir_str = dir.to_string_lossy();
+        let prefix = if dir_str.is_empty() {
+            String::new()
+        } else {
+            format!("{}/", dir_str)
+        };
+        if prefix.is_empty() || file.starts_with(&prefix) {
+            let len = prefix.len();
+            if len >= best_len {
+                best_len = len;
+                best = Some((name.as_str(), dir.as_path()));
+            }
+        }
+    }
+    best
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -660,41 +809,44 @@ mod tests {
             "src/index/mod.rs".to_string(),
             "src/mcp.rs".to_string(),
         ];
-        let result = resolve_import("crate::codemap", Language::Rust, "src/mcp.rs", &all_files);
+        let result =
+            resolve_import("crate::codemap", Language::Rust, "src/mcp.rs", &all_files, None);
         assert_eq!(result, Some("src/codemap.rs".to_string()));
     }
 
     #[test]
     fn rust_external_import_unresolved() {
         let all_files = vec!["src/main.rs".to_string()];
-        let result = resolve_import("serde::Serialize", Language::Rust, "src/main.rs", &all_files);
+        let result = resolve_import(
+            "serde::Serialize",
+            Language::Rust,
+            "src/main.rs",
+            &all_files,
+            None,
+        );
         assert_eq!(result, None);
     }
 
     #[test]
     fn python_relative_import_resolves() {
-        let all_files = vec![
-            "src/auth.py".to_string(),
-            "src/api.py".to_string(),
-        ];
-        let result = resolve_import(".auth", Language::Python, "src/api.py", &all_files);
+        let all_files = vec!["src/auth.py".to_string(), "src/api.py".to_string()];
+        let result = resolve_import(".auth", Language::Python, "src/api.py", &all_files, None);
         assert_eq!(result, Some("src/auth.py".to_string()));
     }
 
     #[test]
     fn ts_relative_import_resolves() {
-        let all_files = vec![
-            "src/utils.ts".to_string(),
-            "src/main.ts".to_string(),
-        ];
-        let result = resolve_import("./utils", Language::TypeScript, "src/main.ts", &all_files);
+        let all_files = vec!["src/utils.ts".to_string(), "src/main.ts".to_string()];
+        let result =
+            resolve_import("./utils", Language::TypeScript, "src/main.ts", &all_files, None);
         assert_eq!(result, Some("src/utils.ts".to_string()));
     }
 
     #[test]
     fn ts_bare_import_is_external() {
         let all_files = vec!["src/main.ts".to_string()];
-        let result = resolve_import("express", Language::TypeScript, "src/main.ts", &all_files);
+        let result =
+            resolve_import("express", Language::TypeScript, "src/main.ts", &all_files, None);
         assert_eq!(result, None);
     }
 
@@ -718,6 +870,7 @@ mod tests {
             Language::Java,
             "src/main/java/com/example/App.java",
             &all_files,
+            None,
         );
         assert_eq!(
             result,
@@ -728,8 +881,200 @@ mod tests {
     #[test]
     fn ts_d_ts_resolves() {
         let all_files = vec!["src/types.d.ts".to_string()];
-        let result = resolve_import("./types", Language::TypeScript, "src/main.ts", &all_files);
+        let result =
+            resolve_import("./types", Language::TypeScript, "src/main.ts", &all_files, None);
         assert_eq!(result, Some("src/types.d.ts".to_string()));
+    }
+
+    #[test]
+    fn build_crate_map_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        // Root workspace Cargo.toml (virtual -- no [package])
+        fs::create_dir_all(dir.path().join("crate-a/src")).unwrap();
+        fs::create_dir_all(dir.path().join("crate-b/src")).unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crate-a\", \"crate-b\"]\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("crate-a/Cargo.toml"),
+            "[package]\nname = \"crate-a\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("crate-b/Cargo.toml"),
+            "[package]\nname = \"crate-b\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let map = build_crate_map(dir.path());
+        assert_eq!(map.len(), 2);
+        assert!(map.contains_key("crate_a"), "missing crate_a: {:?}", map);
+        assert!(map.contains_key("crate_b"), "missing crate_b: {:?}", map);
+    }
+
+    #[test]
+    fn build_crate_map_ignores_bin_name() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"my-crate\"\nversion = \"0.1.0\"\n\n[[bin]]\nname = \"my-binary\"\npath = \"src/main.rs\"\n",
+        )
+        .unwrap();
+        let map = build_crate_map(dir.path());
+        assert_eq!(map.len(), 1);
+        assert!(
+            map.contains_key("my_crate"),
+            "should have my_crate, got: {:?}",
+            map
+        );
+        assert!(!map.contains_key("my_binary"), "should not have my_binary");
+    }
+
+    #[test]
+    fn build_crate_map_virtual_workspace_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"a\"]\n",
+        )
+        .unwrap();
+        let map = build_crate_map(dir.path());
+        // Virtual workspace has no [package], should produce empty map for this file
+        assert!(!map.contains_key("workspace"));
+    }
+
+    #[test]
+    fn find_crate_root_matches_longest_prefix() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("parent_crate".to_string(), PathBuf::from("parent"));
+        map.insert(
+            "nested_tool".to_string(),
+            PathBuf::from("parent/tools/nested"),
+        );
+        let result = find_crate_root("parent/tools/nested/src/main.rs", &map);
+        assert_eq!(result.unwrap().0, "nested_tool");
+        let result2 = find_crate_root("parent/src/lib.rs", &map);
+        assert_eq!(result2.unwrap().0, "parent_crate");
+    }
+
+    #[test]
+    fn resolve_rust_workspace_crate_import() {
+        let all_files = vec![
+            "crate-a/src/lib.rs".to_string(),
+            "crate-a/src/utils.rs".to_string(),
+            "crate-b/src/lib.rs".to_string(),
+            "crate-b/src/types.rs".to_string(),
+        ];
+        let mut crate_map = std::collections::HashMap::new();
+        crate_map.insert("crate_a".to_string(), PathBuf::from("crate-a"));
+        crate_map.insert("crate_b".to_string(), PathBuf::from("crate-b"));
+
+        // crate:: import from within crate-a
+        let result = resolve_import(
+            "crate::utils",
+            Language::Rust,
+            "crate-a/src/lib.rs",
+            &all_files,
+            Some(&crate_map),
+        );
+        assert_eq!(result, Some("crate-a/src/utils.rs".to_string()));
+
+        // Cross-crate import
+        let result = resolve_import(
+            "crate_b::types",
+            Language::Rust,
+            "crate-a/src/lib.rs",
+            &all_files,
+            Some(&crate_map),
+        );
+        assert_eq!(result, Some("crate-b/src/types.rs".to_string()));
+    }
+
+    #[test]
+    fn resolve_rust_single_crate_fallback() {
+        let all_files = vec!["src/mcp.rs".to_string(), "src/index/mod.rs".to_string()];
+        // No crate map -- single crate
+        let result =
+            resolve_import("crate::mcp", Language::Rust, "src/main.rs", &all_files, None);
+        assert_eq!(result, Some("src/mcp.rs".to_string()));
+    }
+
+    #[test]
+    fn resolve_rust_external_with_crate_map() {
+        let all_files = vec!["src/lib.rs".to_string()];
+        let crate_map = std::collections::HashMap::new();
+        let result = resolve_import(
+            "serde::Serialize",
+            Language::Rust,
+            "src/lib.rs",
+            &all_files,
+            Some(&crate_map),
+        );
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn resolve_rust_binary_imports_own_lib() {
+        let all_files = vec![
+            "src/main.rs".to_string(),
+            "src/lib.rs".to_string(),
+            "src/mcp.rs".to_string(),
+        ];
+        let mut crate_map = std::collections::HashMap::new();
+        crate_map.insert("taoki".to_string(), PathBuf::from(""));
+        let result = resolve_import(
+            "taoki::mcp",
+            Language::Rust,
+            "src/main.rs",
+            &all_files,
+            Some(&crate_map),
+        );
+        assert_eq!(result, Some("src/mcp.rs".to_string()));
+    }
+
+    #[test]
+    fn find_crate_root_file_outside_workspace() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("my_crate".to_string(), PathBuf::from("crates/my-crate"));
+        let result = find_crate_root("scripts/build.rs", &map);
+        assert!(
+            result.is_none(),
+            "file outside all crate dirs should return None"
+        );
+    }
+
+    #[test]
+    fn query_deps_dedup_internal() {
+        let mut graph = DepsGraph {
+            version: DEPS_VERSION,
+            graph: std::collections::HashMap::new(),
+        };
+        graph.graph.insert(
+            "src/main.rs".to_string(),
+            FileImports {
+                imports: vec![
+                    ImportInfo {
+                        path: "src/utils.rs".to_string(),
+                        symbols: vec![],
+                        external: false,
+                    },
+                    ImportInfo {
+                        path: "src/utils.rs".to_string(),
+                        symbols: vec![],
+                        external: false,
+                    },
+                ],
+            },
+        );
+        let out = query_deps(&graph, "src/main.rs");
+        // Should only list src/utils.rs once
+        assert_eq!(
+            out.matches("src/utils.rs").count(),
+            1,
+            "depends_on should be deduped: {}",
+            out
+        );
     }
 
     #[test]

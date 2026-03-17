@@ -8,6 +8,7 @@ pub(crate) const INSIGHT_MATCH_TARGET_TRUNCATE: usize = 30;
 pub(crate) const INSIGHT_ARM_TRUNCATE: usize = 30;
 pub(crate) const INSIGHT_ERROR_TRUNCATE: usize = 40;
 pub(crate) const MAX_CALLS: usize = 12;
+pub(crate) const MAX_METHODS: usize = 8;
 pub(crate) const MAX_MATCH_ARMS: usize = 10;
 pub(crate) const MAX_ERRORS: usize = 8;
 
@@ -20,6 +21,7 @@ pub(crate) struct MatchInsight {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct BodyInsights {
     pub(crate) calls: Vec<String>,
+    pub(crate) method_calls: Vec<String>,
     pub(crate) match_arms: Vec<MatchInsight>,
     pub(crate) error_returns: Vec<String>,
     pub(crate) try_count: usize,
@@ -29,11 +31,18 @@ impl BodyInsights {
     pub(crate) fn format_lines(&self) -> Vec<String> {
         let mut lines = Vec::new();
 
-        // Calls (sorted lexicographically, truncated)
+        // Free/scoped calls (domain orchestration)
         if !self.calls.is_empty() {
             let display: Vec<&str> = self.calls.iter().take(MAX_CALLS).map(|s| s.as_str()).collect();
             let suffix = if self.calls.len() > MAX_CALLS { ", ..." } else { "" };
             lines.push(format!("→ calls: {}{suffix}", display.join(", ")));
+        }
+
+        // Method calls (plumbing)
+        if !self.method_calls.is_empty() {
+            let display: Vec<&str> = self.method_calls.iter().take(MAX_METHODS).map(|s| s.as_str()).collect();
+            let suffix = if self.method_calls.len() > MAX_METHODS { ", ..." } else { "" };
+            lines.push(format!("→ methods: {}{suffix}", display.join(", ")));
         }
 
         // Match/switch arms (source order)
@@ -72,12 +81,13 @@ pub(crate) fn analyze_body(node: Node, source: &[u8], lang: Language) -> BodyIns
         None => return BodyInsights::default(),
     };
 
-    let calls = extract_calls(body, source, lang);
+    let (calls, method_calls) = extract_calls(body, source, lang);
     let match_arms = extract_match_arms(body, source, lang);
     let (error_returns, try_count) = extract_error_returns(body, source, lang);
 
     BodyInsights {
         calls,
+        method_calls,
         match_arms,
         error_returns,
         try_count,
@@ -117,29 +127,50 @@ fn walk_body(node: Node, lang: Language, visitor: &mut impl FnMut(Node)) {
 // --- Call extraction ---
 
 /// Extract the callee name and whether it's a method call from a call expression node.
-/// Returns `(name, is_method)` where `is_method` is true for calls on a receiver
-/// (e.g., `obj.method()`) and false for free/scoped calls (e.g., `foo()`, `Mod::func()`).
-fn extract_callee_name<'a>(node: Node<'a>, source: &'a [u8], lang: Language) -> Option<(&'a str, bool)> {
+/// Returns `(name, is_method)` where `is_method` is true for calls on a receiver.
+/// For method calls on compound receivers (field access depth >= 2), includes one level
+/// of receiver context: `self.client.get()` → `"client.get"`.
+fn extract_callee_name(node: Node, source: &[u8], lang: Language) -> Option<(String, bool)> {
     match lang {
         Language::Rust => {
             let func = node.child_by_field_name("function")?;
             match func.kind() {
-                "identifier" => Some((node_text(func, source), false)),
-                "scoped_identifier" => Some((node_text(func, source), false)),
+                "identifier" => Some((node_text(func, source).to_string(), false)),
+                "scoped_identifier" => Some((node_text(func, source).to_string(), false)),
                 "field_expression" => {
                     let field = func.child_by_field_name("field")?;
-                    Some((node_text(field, source), true))
+                    let value = func.child_by_field_name("value")?;
+                    let prefix = if value.kind() == "field_expression" {
+                        value.child_by_field_name("field").map(|f| node_text(f, source))
+                    } else {
+                        None
+                    };
+                    let name = match prefix {
+                        Some(p) => format!("{}.{}", p, node_text(field, source)),
+                        None => node_text(field, source).to_string(),
+                    };
+                    Some((name, true))
                 }
-                _ => Some((node_text(func, source), false)),
+                _ => Some((node_text(func, source).to_string(), false)),
             }
         }
         Language::Python => {
             let func = node.child_by_field_name("function")?;
             match func.kind() {
-                "identifier" => Some((node_text(func, source), false)),
+                "identifier" => Some((node_text(func, source).to_string(), false)),
                 "attribute" => {
                     let attr = func.child_by_field_name("attribute")?;
-                    Some((node_text(attr, source), true))
+                    let obj = func.child_by_field_name("object")?;
+                    let prefix = if obj.kind() == "attribute" {
+                        obj.child_by_field_name("attribute").map(|a| node_text(a, source))
+                    } else {
+                        None
+                    };
+                    let name = match prefix {
+                        Some(p) => format!("{}.{}", p, node_text(attr, source)),
+                        None => node_text(attr, source).to_string(),
+                    };
+                    Some((name, true))
                 }
                 _ => None,
             }
@@ -147,10 +178,20 @@ fn extract_callee_name<'a>(node: Node<'a>, source: &'a [u8], lang: Language) -> 
         Language::TypeScript | Language::JavaScript => {
             let func = node.child_by_field_name("function")?;
             match func.kind() {
-                "identifier" => Some((node_text(func, source), false)),
+                "identifier" => Some((node_text(func, source).to_string(), false)),
                 "member_expression" => {
                     let prop = func.child_by_field_name("property")?;
-                    Some((node_text(prop, source), true))
+                    let obj = func.child_by_field_name("object")?;
+                    let prefix = if obj.kind() == "member_expression" {
+                        obj.child_by_field_name("property").map(|p| node_text(p, source))
+                    } else {
+                        None
+                    };
+                    let name = match prefix {
+                        Some(p) => format!("{}.{}", p, node_text(prop, source)),
+                        None => node_text(prop, source).to_string(),
+                    };
+                    Some((name, true))
                 }
                 _ => None,
             }
@@ -158,18 +199,40 @@ fn extract_callee_name<'a>(node: Node<'a>, source: &'a [u8], lang: Language) -> 
         Language::Go => {
             let func = node.child_by_field_name("function")?;
             match func.kind() {
-                "identifier" => Some((node_text(func, source), false)),
+                "identifier" => Some((node_text(func, source).to_string(), false)),
                 "selector_expression" => {
                     let field = func.child_by_field_name("field")?;
-                    Some((node_text(field, source), true))
+                    let operand = func.child_by_field_name("operand")?;
+                    let prefix = if operand.kind() == "selector_expression" {
+                        operand.child_by_field_name("field").map(|f| node_text(f, source))
+                    } else {
+                        None
+                    };
+                    let name = match prefix {
+                        Some(p) => format!("{}.{}", p, node_text(field, source)),
+                        None => node_text(field, source).to_string(),
+                    };
+                    Some((name, true))
                 }
                 _ => None,
             }
         }
         Language::Java => {
-            let name = node.child_by_field_name("name")?;
-            let is_method = node.child_by_field_name("object").is_some();
-            Some((node_text(name, source), is_method))
+            let call_name = node.child_by_field_name("name")?;
+            let object = node.child_by_field_name("object");
+            let is_method = object.is_some();
+            let prefix = object.and_then(|obj| {
+                if obj.kind() == "field_access" {
+                    obj.child_by_field_name("field").map(|f| node_text(f, source))
+                } else {
+                    None
+                }
+            });
+            let name = match prefix {
+                Some(p) => format!("{}.{}", p, node_text(call_name, source)),
+                None => node_text(call_name, source).to_string(),
+            };
+            Some((name, is_method))
         }
     }
 }
@@ -191,14 +254,14 @@ fn is_noise_call(_name: &str, _lang: Language) -> bool {
     false
 }
 
-fn extract_calls(body: Node, source: &[u8], lang: Language) -> Vec<String> {
+fn extract_calls(body: Node, source: &[u8], lang: Language) -> (Vec<String>, Vec<String>) {
     let mut primary = std::collections::BTreeSet::new();
     let mut methods = std::collections::BTreeSet::new();
     walk_body(body, lang, &mut |node| {
         if is_call_node(node, lang) {
             if let Some((name, is_method)) = extract_callee_name(node, source, lang) {
-                if !is_noise_call(name, lang) {
-                    let truncated = truncate(name, INSIGHT_CALL_TRUNCATE);
+                if !is_noise_call(&name, lang) {
+                    let truncated = truncate(&name, INSIGHT_CALL_TRUNCATE);
                     if is_method {
                         methods.insert(truncated);
                     } else {
@@ -208,11 +271,9 @@ fn extract_calls(body: Node, source: &[u8], lang: Language) -> Vec<String> {
             }
         }
     });
-    // Free/scoped calls first (domain orchestration), then method calls (plumbing)
-    let mut result: Vec<String> = primary.into_iter().collect();
-    let remaining = MAX_CALLS.saturating_sub(result.len());
-    result.extend(methods.into_iter().take(remaining));
-    result
+    let calls: Vec<String> = primary.into_iter().collect();
+    let method_calls: Vec<String> = methods.into_iter().collect();
+    (calls, method_calls)
 }
 
 // --- Match/switch arm extraction ---
@@ -613,6 +674,7 @@ mod tests {
     fn test_format_lines_all_sections() {
         let insights = BodyInsights {
             calls: vec!["alpha".into(), "beta".into()],
+            method_calls: vec![],
             match_arms: vec![MatchInsight {
                 target: "x".into(),
                 arms: vec!["1".into(), "2".into()],
@@ -625,6 +687,82 @@ mod tests {
         assert_eq!(lines[0], "→ calls: alpha, beta");
         assert_eq!(lines[1], "→ match: x → 1, 2");
         assert_eq!(lines[2], "→ errors: Err(NotFound), 1× ?");
+    }
+
+    #[test]
+    fn test_format_lines_split_calls_methods() {
+        let insights = BodyInsights {
+            calls: vec!["HashMap::new".into(), "Ok".into()],
+            method_calls: vec!["clone".into(), "push".into()],
+            ..Default::default()
+        };
+        let lines = insights.format_lines();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "→ calls: HashMap::new, Ok");
+        assert_eq!(lines[1], "→ methods: clone, push");
+    }
+
+    #[test]
+    fn test_format_lines_calls_only_no_methods_line() {
+        let insights = BodyInsights {
+            calls: vec!["foo".into()],
+            method_calls: vec![],
+            ..Default::default()
+        };
+        let lines = insights.format_lines();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0], "→ calls: foo");
+    }
+
+    #[test]
+    fn test_format_lines_methods_only_no_calls_line() {
+        let insights = BodyInsights {
+            calls: vec![],
+            method_calls: vec!["push".into()],
+            ..Default::default()
+        };
+        let lines = insights.format_lines();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0], "→ methods: push");
+    }
+
+    #[test]
+    fn test_format_lines_methods_truncated() {
+        let methods: Vec<String> = (0..12).map(|i| format!("m_{i}")).collect();
+        let insights = BodyInsights {
+            method_calls: methods,
+            ..Default::default()
+        };
+        let lines = insights.format_lines();
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].starts_with("→ methods: "));
+        assert!(lines[0].ends_with(", ..."));
+        // Should contain exactly 8 method names (MAX_METHODS)
+        assert_eq!(lines[0].matches(',').count(), 8); // 7 commas + ", ..."
+    }
+
+    #[test]
+    fn test_extract_calls_split_rust() {
+        let src = r#"
+fn example() {
+    let v = Vec::new();
+    v.push(1);
+    v.extend(vec![2, 3]);
+    let s = String::from("hi");
+    s.len();
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Rust);
+        let root = tree.root_node();
+        let fn_node = root.child(0).unwrap();
+        let insights = analyze_body(fn_node, &bytes, Language::Rust);
+        // Vec::new and String::from are free/scoped calls
+        assert!(insights.calls.contains(&"Vec::new".to_string()), "Vec::new should be a call");
+        assert!(insights.calls.contains(&"String::from".to_string()), "String::from should be a call");
+        // push, extend, len are method calls
+        assert!(insights.method_calls.contains(&"push".to_string()), "push should be a method");
+        assert!(insights.method_calls.contains(&"extend".to_string()), "extend should be a method");
+        assert!(insights.method_calls.contains(&"len".to_string()), "len should be a method");
     }
 
     // --- walk_body tests ---
@@ -725,8 +863,9 @@ fn example() {
         let fn_node = root.child(0).unwrap();
         let body = fn_node.child_by_field_name("body").unwrap();
 
-        let calls = extract_calls(body, &bytes, Language::Rust);
-        assert_eq!(calls, vec!["alpha", "bar::baz", "beta", "foo", "gamma", "method"]);
+        let (calls, methods) = extract_calls(body, &bytes, Language::Rust);
+        assert_eq!(calls, vec!["alpha", "bar::baz", "beta", "foo", "gamma"]);
+        assert_eq!(methods, vec!["method"]);
     }
 
     #[test]
@@ -741,8 +880,9 @@ def example():
         let root = tree.root_node();
         let fn_node = root.child(0).unwrap();
         let body = fn_node.child_by_field_name("body").unwrap();
-        let calls = extract_calls(body, &bytes, Language::Python);
-        assert_eq!(calls, vec!["alpha", "beta", "foo", "method"]);
+        let (calls, methods) = extract_calls(body, &bytes, Language::Python);
+        assert_eq!(calls, vec!["alpha", "beta", "foo"]);
+        assert_eq!(methods, vec!["method"]);
     }
 
     #[test]
@@ -758,8 +898,9 @@ function example() {
         let root = tree.root_node();
         let fn_node = root.child(0).unwrap();
         let body = fn_node.child_by_field_name("body").unwrap();
-        let calls = extract_calls(body, &bytes, Language::TypeScript);
-        assert_eq!(calls, vec!["alpha", "beta", "foo", "method"]);
+        let (calls, methods) = extract_calls(body, &bytes, Language::TypeScript);
+        assert_eq!(calls, vec!["alpha", "beta", "foo"]);
+        assert_eq!(methods, vec!["method"]);
     }
 
     #[test]
@@ -779,9 +920,9 @@ func example() {
             .find(|c| c.kind() == "function_declaration")
             .unwrap();
         let body = fn_node.child_by_field_name("body").unwrap();
-        let calls = extract_calls(body, &bytes, Language::Go);
-        // Free calls (alpha, beta, foo) before method calls (Method via selector_expression)
-        assert_eq!(calls, vec!["alpha", "beta", "foo", "Method"]);
+        let (calls, methods) = extract_calls(body, &bytes, Language::Go);
+        assert_eq!(calls, vec!["alpha", "beta", "foo"]);
+        assert_eq!(methods, vec!["Method"]);
     }
 
     #[test]
@@ -804,8 +945,9 @@ class Example {
             .find(|c| c.kind() == "method_declaration")
             .unwrap();
         let method_body = method.child_by_field_name("body").unwrap();
-        let calls = extract_calls(method_body, &bytes, Language::Java);
-        assert_eq!(calls, vec!["alpha", "beta", "foo", "method"]);
+        let (calls, methods) = extract_calls(method_body, &bytes, Language::Java);
+        assert_eq!(calls, vec!["alpha", "beta", "foo"]);
+        assert_eq!(methods, vec!["method"]);
     }
 
     // --- extract_match_arms tests ---
@@ -1099,7 +1241,8 @@ func handle(cmd string) error {
         let insights = analyze_body(fn_node, &bytes, Language::Go);
         let lines = insights.format_lines();
         assert_eq!(lines, vec![
-            "→ calls: start, stop, validate, New",
+            "→ calls: start, stop, validate",
+            "→ methods: New",
             "→ match: cmd → \"start\", \"stop\", default",
             "→ errors: errors.New",
         ]);
@@ -1281,7 +1424,7 @@ fn example() -> Result<(), Error> {
         let root = tree.root_node();
         let fn_node = root.child(0).unwrap();
         let body = fn_node.child_by_field_name("body").unwrap();
-        let calls = extract_calls(body, &bytes, Language::Rust);
+        let (calls, _methods) = extract_calls(body, &bytes, Language::Rust);
         // No name-based filtering — Ok is a free call and appears in primary tier
         assert!(calls.contains(&"bar".to_string()));
         assert!(calls.contains(&"foo".to_string()));
@@ -1306,12 +1449,9 @@ fn example() {
         let root = tree.root_node();
         let fn_node = root.child(0).unwrap();
         let body = fn_node.child_by_field_name("body").unwrap();
-        let calls = extract_calls(body, &bytes, Language::Rust);
-        // Free/scoped first (sorted), then method calls (sorted)
-        assert_eq!(calls, vec![
-            "Config::new", "compute", "process",
-            "clone", "collect", "is_empty", "iter", "map",
-        ]);
+        let (calls, methods) = extract_calls(body, &bytes, Language::Rust);
+        assert_eq!(calls, vec!["Config::new", "compute", "process"]);
+        assert_eq!(methods, vec!["clone", "collect", "is_empty", "iter", "map"]);
     }
 
     #[test]
@@ -1328,12 +1468,9 @@ def example(items):
         let root = tree.root_node();
         let fn_node = root.child(0).unwrap();
         let body = fn_node.child_by_field_name("body").unwrap();
-        let calls = extract_calls(body, &bytes, Language::Python);
-        // Free calls first, then method calls
-        assert_eq!(calls, vec![
-            "save", "validate",
-            "append", "filter", "sort",
-        ]);
+        let (calls, methods) = extract_calls(body, &bytes, Language::Python);
+        assert_eq!(calls, vec!["save", "validate"]);
+        assert_eq!(methods, vec!["append", "filter", "sort"]);
     }
 
     #[test]
@@ -1350,11 +1487,9 @@ function example(items: any[]) {
         let root = tree.root_node();
         let fn_node = root.child(0).unwrap();
         let body = fn_node.child_by_field_name("body").unwrap();
-        let calls = extract_calls(body, &bytes, Language::TypeScript);
-        assert_eq!(calls, vec![
-            "process", "validate",
-            "filter", "push",
-        ]);
+        let (calls, methods) = extract_calls(body, &bytes, Language::TypeScript);
+        assert_eq!(calls, vec!["process", "validate"]);
+        assert_eq!(methods, vec!["filter", "push"]);
     }
 
     #[test]
@@ -1378,17 +1513,14 @@ class Example {
             .find(|c| c.kind() == "method_declaration")
             .unwrap();
         let method_body = method.child_by_field_name("body").unwrap();
-        let calls = extract_calls(method_body, &bytes, Language::Java);
-        // Free calls (no object receiver) first, then method calls (with object)
-        assert_eq!(calls, vec![
-            "process", "validate",
-            "notify", "save",
-        ]);
+        let (calls, methods) = extract_calls(method_body, &bytes, Language::Java);
+        assert_eq!(calls, vec!["process", "validate"]);
+        assert_eq!(methods, vec!["notify", "save"]);
     }
 
     #[test]
     fn test_calls_priority_methods_fill_remaining_budget() {
-        // When free calls fill the budget, method calls are truncated
+        // When free calls fill the budget, method calls are separate
         let mut fn_body = String::from("fn example() {\n");
         for i in 0..14 {
             fn_body.push_str(&format!("    free_fn_{i}();\n"));
@@ -1400,13 +1532,11 @@ class Example {
         let root = tree.root_node();
         let fn_node = root.child(0).unwrap();
         let body = fn_node.child_by_field_name("body").unwrap();
-        let calls = extract_calls(body, &bytes, Language::Rust);
-        // MAX_CALLS is 12 — 14 free calls exceed it, but all 14 primary calls are kept
-        // (MAX_CALLS limits methods budget, not primary). Actually, let's verify behavior:
-        // primary has 14 items, methods has 2. Result = all 14 primary + 0 methods (remaining=0)
+        let (calls, methods) = extract_calls(body, &bytes, Language::Rust);
         assert_eq!(calls.len(), 14, "all primary calls should be included");
-        assert!(!calls.contains(&"method_a".to_string()), "no budget for method calls");
-        assert!(!calls.contains(&"method_b".to_string()), "no budget for method calls");
+        assert_eq!(methods.len(), 2, "method calls are now separate");
+        assert!(methods.contains(&"method_a".to_string()));
+        assert!(methods.contains(&"method_b".to_string()));
     }
 
     #[test]
@@ -1423,9 +1553,9 @@ fn example(items: Vec<i32>) {
         let root = tree.root_node();
         let fn_node = root.child(0).unwrap();
         let body = fn_node.child_by_field_name("body").unwrap();
-        let calls = extract_calls(body, &bytes, Language::Rust);
-        // All are method calls, no free calls — methods fill the full budget
-        assert_eq!(calls, vec!["collect", "is_empty", "iter", "len", "map"]);
+        let (calls, methods) = extract_calls(body, &bytes, Language::Rust);
+        assert!(calls.is_empty(), "no free calls");
+        assert_eq!(methods, vec!["collect", "is_empty", "iter", "len", "map"]);
     }
 
     #[test]
@@ -1452,5 +1582,139 @@ class Example {
         assert!(calls.contains(&"make".to_string()), "should capture call in variable initializer");
         assert!(calls.contains(&"validate".to_string()), "should capture call in var initializer");
         assert!(calls.contains(&"process".to_string()));
+    }
+
+    // --- Receiver context tests ---
+
+    #[test]
+    fn test_receiver_context_rust_chained() {
+        // self.client.get() → client.get
+        let src = r#"
+struct S { client: Client }
+impl S {
+    fn example(&self) {
+        self.client.get("url");
+        self.items.push(1);
+        plain_call();
+        foo.bar();
+    }
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Rust);
+        let root = tree.root_node();
+        // Find the impl block → declaration_list → function_item
+        let mut cursor = root.walk();
+        let impl_node = root.children(&mut cursor)
+            .find(|c| c.kind() == "impl_item")
+            .unwrap();
+        let decl_list = impl_node.children(&mut impl_node.walk())
+            .find(|c| c.kind() == "declaration_list")
+            .unwrap();
+        let fn_node = decl_list.children(&mut decl_list.walk())
+            .find(|c| c.kind() == "function_item")
+            .unwrap();
+        let insights = analyze_body(fn_node, &bytes, Language::Rust);
+        assert!(insights.calls.contains(&"plain_call".to_string()), "free call missing");
+        assert!(insights.method_calls.contains(&"client.get".to_string()),
+            "expected client.get, got: {:?}", insights.method_calls);
+        assert!(insights.method_calls.contains(&"items.push".to_string()),
+            "expected items.push, got: {:?}", insights.method_calls);
+        // foo.bar() — foo is a simple identifier, no prefix
+        assert!(insights.method_calls.contains(&"bar".to_string()),
+            "expected bar (no prefix for simple receiver), got: {:?}", insights.method_calls);
+    }
+
+    #[test]
+    fn test_receiver_context_python() {
+        let src = r#"
+def example(self):
+    self.client.get("url")
+    items.append(1)
+    free_call()
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Python);
+        let root = tree.root_node();
+        let fn_node = root.child(0).unwrap();
+        let insights = analyze_body(fn_node, &bytes, Language::Python);
+        assert!(insights.calls.contains(&"free_call".to_string()));
+        assert!(insights.method_calls.contains(&"client.get".to_string()),
+            "expected client.get, got: {:?}", insights.method_calls);
+        // items.append — items is a simple identifier
+        assert!(insights.method_calls.contains(&"append".to_string()),
+            "expected append, got: {:?}", insights.method_calls);
+    }
+
+    #[test]
+    fn test_receiver_context_typescript() {
+        let src = r#"
+function example() {
+    this.client.get("url");
+    items.push(1);
+    freeFn();
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::TypeScript);
+        let root = tree.root_node();
+        let fn_node = root.child(0).unwrap();
+        let insights = analyze_body(fn_node, &bytes, Language::TypeScript);
+        assert!(insights.calls.contains(&"freeFn".to_string()));
+        assert!(insights.method_calls.contains(&"client.get".to_string()),
+            "expected client.get, got: {:?}", insights.method_calls);
+        assert!(insights.method_calls.contains(&"push".to_string()),
+            "expected push (simple receiver), got: {:?}", insights.method_calls);
+    }
+
+    #[test]
+    fn test_receiver_context_go() {
+        let src = r#"
+package main
+func example() {
+    resp.Body.Close()
+    fmt.Println("hi")
+    s.Do()
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Go);
+        let root = tree.root_node();
+        let mut cursor = root.walk();
+        let fn_node = root.children(&mut cursor)
+            .find(|c| c.kind() == "function_declaration")
+            .unwrap();
+        let insights = analyze_body(fn_node, &bytes, Language::Go);
+        assert!(insights.method_calls.contains(&"Body.Close".to_string()),
+            "expected Body.Close, got: {:?}", insights.method_calls);
+        // fmt.Println — fmt is identifier, no prefix
+        assert!(insights.method_calls.contains(&"Println".to_string()),
+            "expected Println, got: {:?}", insights.method_calls);
+        // s.Do — s is identifier, no prefix
+        assert!(insights.method_calls.contains(&"Do".to_string()),
+            "expected Do, got: {:?}", insights.method_calls);
+    }
+
+    #[test]
+    fn test_receiver_context_java() {
+        let src = r#"
+class Example {
+    void run() {
+        this.service.process();
+        items.add(1);
+        staticCall();
+    }
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Java);
+        let root = tree.root_node();
+        let class_node = root.child(0).unwrap();
+        let body = class_node.child_by_field_name("body").unwrap();
+        let mut cursor = body.walk();
+        let fn_node = body.children(&mut cursor)
+            .find(|c| c.kind() == "method_declaration")
+            .unwrap();
+        let insights = analyze_body(fn_node, &bytes, Language::Java);
+        assert!(insights.method_calls.contains(&"service.process".to_string()),
+            "expected service.process, got: {:?}", insights.method_calls);
+        // items.add — items is simple identifier
+        assert!(insights.method_calls.contains(&"add".to_string()),
+            "expected add, got: {:?}", insights.method_calls);
     }
 }

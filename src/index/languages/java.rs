@@ -194,20 +194,65 @@ impl JavaExtractor {
 
         let body = node.child_by_field_name("body")?;
         let mut constants = Vec::new();
+        let mut members = Vec::new();
         let mut cursor = body.walk();
         for child in body.children(&mut cursor) {
-            if child.kind() == "enum_constant" {
-                let cname = child
-                    .child_by_field_name("name")
-                    .map(|n| node_text(n, source))
-                    .unwrap_or("_");
-                constants.push(cname.to_string());
+            match child.kind() {
+                "enum_constant" => {
+                    let cname = child
+                        .child_by_field_name("name")
+                        .map(|n| node_text(n, source))
+                        .unwrap_or("_");
+                    constants.push(cname.to_string());
+                }
+                "enum_body_declarations" => {
+                    let mut inner_cursor = child.walk();
+                    for member in child.children(&mut inner_cursor) {
+                        self.collect_enum_member(member, source, &mut members);
+                    }
+                }
+                _ => {}
             }
         }
+        constants.extend(members);
 
         let mut entry = SkeletonEntry::new(Section::Type, node, label);
         entry.children = constants;
         Some(entry)
+    }
+
+    fn collect_enum_member(
+        &self,
+        child: Node,
+        source: &[u8],
+        members: &mut Vec<String>,
+    ) {
+        match child.kind() {
+            "method_declaration" | "constructor_declaration" => {
+                let sig = self.method_signature(child, source);
+                let lr = line_range(
+                    child.start_position().row + 1,
+                    child.end_position().row + 1,
+                );
+                members.push(format!("{sig} {lr}"));
+                let insights =
+                    body::analyze_body(child, source, crate::index::Language::Java);
+                for line in insights.format_lines() {
+                    members.push(format!("  {line}"));
+                }
+            }
+            "field_declaration" => {
+                if members.len() < FIELD_TRUNCATE_THRESHOLD {
+                    let text = self.field_text(child, source);
+                    let lr = line_range(
+                        child.start_position().row + 1,
+                        child.end_position().row + 1,
+                    );
+                    members.push(format!("{text} {lr}"));
+                }
+            }
+            _ => {}
+        }
     }
 
     fn extract_record(&self, node: Node, source: &[u8]) -> Option<SkeletonEntry> {
