@@ -195,6 +195,8 @@ Tested against 15 open-source projects (run `cargo run --bin benchmark --feature
 | deno | Rust, TS, JS | 5032 | 5032 | 100% | 21 | 73% | FAIL |
 <!-- BENCH:END -->
 
+**Known limitation:** deno fails on empty skeletons due to `.d.ts` ambient declaration files (`declare namespace`, `declare function`). The TypeScript extractor does not yet handle `declare` blocks — these files parse successfully but produce no structural output. Tracked for a future extractor improvement.
+
 *Results from v0.x.x against pinned commits. Run `cargo run --bin benchmark --features benchmark -- --update-pins` to refresh pins.*
 
 ## Changelog
