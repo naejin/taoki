@@ -171,6 +171,17 @@ curl -fsSL https://raw.githubusercontent.com/naejin/taoki/master/scripts/uninsta
 
 Or manually: `rm -rf ~/.claude/plugins/taoki`
 
+## Benchmarks
+
+Tested against 15 open-source projects (run `cargo run --bin benchmark --features benchmark` to reproduce):
+
+<!-- BENCH:START -->
+| Project | Language | Files | Parsed | Parse % | Empty Skeletons | Reduction | Status |
+|---------|----------|-------|--------|---------|-----------------|-----------|--------|
+<!-- BENCH:END -->
+
+*Results from v0.x.x against pinned commits. Run `cargo run --bin benchmark --features benchmark -- --update-pins` to refresh pins.*
+
 ## Changelog
 
 ### v0.9.2

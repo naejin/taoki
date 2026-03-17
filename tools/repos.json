@@ -1,0 +1,17 @@
+[
+  { "name": "ripgrep", "url": "https://github.com/BurntSushi/ripgrep", "sha": "<pinned>", "lang": "Rust" },
+  { "name": "tokio", "url": "https://github.com/tokio-rs/tokio", "sha": "<pinned>", "lang": "Rust" },
+  { "name": "serde", "url": "https://github.com/serde-rs/serde", "sha": "<pinned>", "lang": "Rust" },
+  { "name": "flask", "url": "https://github.com/pallets/flask", "sha": "<pinned>", "lang": "Python" },
+  { "name": "fastapi", "url": "https://github.com/tiangolo/fastapi", "sha": "<pinned>", "lang": "Python" },
+  { "name": "black", "url": "https://github.com/psf/black", "sha": "<pinned>", "lang": "Python" },
+  { "name": "next.js", "url": "https://github.com/vercel/next.js", "sha": "<pinned>", "lang": "TypeScript" },
+  { "name": "zod", "url": "https://github.com/colinhacks/zod", "sha": "<pinned>", "lang": "TypeScript" },
+  { "name": "trpc", "url": "https://github.com/trpc/trpc", "sha": "<pinned>", "lang": "TypeScript" },
+  { "name": "caddy", "url": "https://github.com/caddyserver/caddy", "sha": "<pinned>", "lang": "Go" },
+  { "name": "cobra", "url": "https://github.com/spf13/cobra", "sha": "<pinned>", "lang": "Go" },
+  { "name": "hugo", "url": "https://github.com/gohugoio/hugo", "sha": "<pinned>", "lang": "Go" },
+  { "name": "guava", "url": "https://github.com/google/guava", "sha": "<pinned>", "lang": "Java" },
+  { "name": "spring-boot", "url": "https://github.com/spring-projects/spring-boot", "sha": "<pinned>", "lang": "Java" },
+  { "name": "deno", "url": "https://github.com/denoland/deno", "sha": "<pinned>", "lang": "Rust, TS, JS" }
+]

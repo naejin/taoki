@@ -30,3 +30,11 @@ harness = false
 [[bench]]
 name = "token_ratio"
 harness = false
+
+[[bin]]
+name = "benchmark"
+path = "tools/benchmark.rs"
+required-features = ["benchmark"]
+
+[features]
+benchmark = []
