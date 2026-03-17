@@ -96,6 +96,144 @@ fn validate_repos(repos: &[RepoEntry]) -> Vec<String> {
     errors
 }
 
+fn update_pins(repos_path: &str) {
+    let data = fs::read_to_string(repos_path).expect("failed to read repos.json");
+    let mut repos: Vec<RepoEntry> =
+        serde_json::from_str(&data).expect("failed to parse repos.json");
+
+    for repo in &mut repos {
+        let output = Command::new("git")
+            .args(["ls-remote", &repo.url, "HEAD"])
+            .output()
+            .expect("failed to run git ls-remote");
+        if !output.status.success() {
+            eprintln!("ERROR: git ls-remote failed for {}", repo.url);
+            process::exit(1);
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let sha = stdout
+            .split_whitespace()
+            .next()
+            .expect("no SHA in ls-remote output");
+        println!("{}: {} -> {}", repo.name, repo.sha, sha);
+        repo.sha = sha.to_string();
+    }
+
+    let json = serde_json::to_string_pretty(&repos).expect("failed to serialize");
+    fs::write(repos_path, json + "\n").expect("failed to write repos.json");
+    println!("\nUpdated {} entries in {}", repos.len(), repos_path);
+}
+
+fn clone_or_fetch(url: &str, sha: &str, repo_path: &Path) {
+    if !repo_path.exists() {
+        let status = Command::new("git")
+            .args(["clone", "--depth", "1", url])
+            .arg(repo_path)
+            .status()
+            .expect("failed to run git clone");
+        if !status.success() {
+            eprintln!("ERROR: git clone failed for {}", url);
+            process::exit(1);
+        }
+    }
+
+    let fetch = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["fetch", "--depth", "1", "origin", sha])
+        .status()
+        .expect("failed to run git fetch");
+    if !fetch.success() {
+        eprintln!("ERROR: git fetch failed for {} (sha {})", url, sha);
+        process::exit(1);
+    }
+
+    let checkout = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["checkout", sha])
+        .status()
+        .expect("failed to run git checkout");
+    if !checkout.success() {
+        eprintln!("ERROR: git checkout failed for sha {}", sha);
+        process::exit(1);
+    }
+}
+
+fn run_project(repo: &RepoEntry) -> ProjectResult {
+    let repo_path = PathBuf::from(CACHE_DIR).join(&repo.name);
+    clone_or_fetch(&repo.url, &repo.sha, &repo_path);
+
+    let files = codemap::walk_files_public(&repo_path).unwrap_or_else(|e| {
+        eprintln!("ERROR: failed to walk {}: {}", repo.name, e);
+        process::exit(1);
+    });
+
+    let mut result = ProjectResult {
+        name: repo.name.clone(),
+        lang: repo.lang.clone(),
+        total_files: 0,
+        parsed_ok: 0,
+        parse_errors: 0,
+        skipped: 0,
+        empty_skeletons: 0,
+        substantial_files: 0,
+        total_source_bytes: 0,
+        total_skeleton_bytes: 0,
+        errors: HashMap::new(),
+    };
+
+    for file in &files {
+        let source = match fs::read(file) {
+            Ok(s) => s,
+            Err(_) => {
+                result.skipped += 1;
+                continue;
+            }
+        };
+
+        if source.len() as u64 > MAX_FILE_SIZE {
+            result.skipped += 1;
+            continue;
+        }
+
+        let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let lang = match Language::from_extension(ext) {
+            Some(l) => l,
+            None => {
+                result.skipped += 1;
+                continue;
+            }
+        };
+
+        result.total_files += 1;
+
+        match index::extract_all(&source, lang) {
+            Ok((_api, skeleton)) => {
+                result.parsed_ok += 1;
+                result.total_source_bytes += source.len();
+                result.total_skeleton_bytes += skeleton.len();
+
+                let line_count = source.iter().filter(|&&b| b == b'\n').count();
+                let is_test = mcp::is_test_filename(file);
+
+                if line_count > MIN_LINES && !is_test {
+                    result.substantial_files += 1;
+                    if skeleton.trim().is_empty() {
+                        result.empty_skeletons += 1;
+                    }
+                }
+            }
+            Err(e) => {
+                result.parse_errors += 1;
+                *result.errors.entry(e.to_string()).or_insert(0) += 1;
+            }
+        }
+    }
+
+    result
+}
+
 fn inject_content(content: &str, table: &str) -> Result<String, String> {
     let start = content
         .find(BENCH_START)
@@ -161,6 +299,37 @@ fn format_error_summary(results: &[ProjectResult]) -> String {
         out.push_str(&format!("  {}x {}\n", count, msg));
     }
     out
+}
+
+fn print_results(results: &[ProjectResult]) {
+    println!("\n{:-<80}", "");
+    println!("BENCHMARK RESULTS");
+    println!("{:-<80}\n", "");
+
+    for r in results {
+        let status = if r.passed() { "PASS" } else { "FAIL" };
+        println!(
+            "{} [{}] - {} files, {:.1}% parsed, {} empty ({:.1}%), {:.1}% reduction - {}",
+            r.name,
+            r.lang,
+            r.total_files,
+            r.parse_pct(),
+            r.empty_skeletons,
+            r.empty_pct(),
+            r.reduction_pct(),
+            status,
+        );
+    }
+
+    let error_summary = format_error_summary(results);
+    if !error_summary.is_empty() {
+        print!("{}", error_summary);
+    }
+
+    let all_pass = results.iter().all(|r| r.passed());
+    println!("\n{:-<80}", "");
+    println!("OVERALL: {}", if all_pass { "PASS" } else { "FAIL" });
+    println!("{:-<80}", "");
 }
 
 fn main() {
