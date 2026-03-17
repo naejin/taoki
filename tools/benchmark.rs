@@ -313,11 +313,17 @@ fn print_results(results: &[ProjectResult]) {
 
     for r in results {
         let status = if r.passed() { "PASS" } else { "FAIL" };
+        let skip_info = if r.skipped > 0 {
+            format!(" ({} skipped)", r.skipped)
+        } else {
+            String::new()
+        };
         println!(
-            "{} [{}] - {} files, {:.1}% parsed, {} empty ({:.1}%), {:.1}% reduction - {}",
+            "{} [{}] - {} files{}, {:.1}% parsed, {} empty ({:.1}%), {:.1}% reduction - {}",
             r.name,
             r.lang,
             r.total_files,
+            skip_info,
             r.parse_pct(),
             r.empty_skeletons,
             r.empty_pct(),

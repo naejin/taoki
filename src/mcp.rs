@@ -365,7 +365,6 @@ fn is_test_data_path(path: &std::path::Path) -> bool {
         "/test/fixtures/", // general
         "/test/data/",     // general
         "/__fixtures__/",  // Jest
-        "/fixtures/",      // common (only after test-like parent)
         "/src/test/resources/", // Java/Maven
     ];
     PATTERNS.iter().any(|p| s.contains(p))
@@ -530,5 +529,7 @@ mod tests {
         assert!(!is_test_filename(std::path::Path::new("src/data/models.py")));
         assert!(!is_test_filename(std::path::Path::new("src/fixtures.rs")));
         assert!(!is_test_filename(std::path::Path::new("lib/data/parser.ts")));
+        assert!(!is_test_filename(std::path::Path::new("src/fixtures/models.py")));
+        assert!(!is_test_filename(std::path::Path::new("app/fixtures/seed.ts")));
     }
 }
