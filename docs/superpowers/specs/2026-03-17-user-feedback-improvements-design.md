@@ -12,7 +12,7 @@ User assessment: `index` is the standout tool. `dependencies` is "modestly usefu
 
 ## Goal
 
-Eliminate the overlap between `code_map` and `index` to give each tool a clear, distinct identity. Improve `dependencies` depth and symbol detail. Fix tool role confusion through hooks and clearer tool descriptions. Preserve backward compatibility for small repos.
+Eliminate the overlap between `code_map` and `index` to give each tool a clear, distinct identity. Improve `dependencies` depth and symbol detail. Fix tool role confusion through hooks and clearer tool descriptions. This is a major overhaul — clean breaks over backward compatibility.
 
 **Design principle:** `code_map` is the navigator (what's where), `index` is the deep viewer (what's inside), `dependencies` is the impact analyzer (what's connected). No tool should try to do what another does.
 
@@ -44,7 +44,7 @@ The `files` mode duplicates what `index` does, creating confusion about which to
 
 **Switch from `extract_all()` to `extract_public_api()`:** `code_map` currently calls `index::extract_all()` which returns `(PublicApi, skeleton)` — then discards the skeleton for overview mode but stores it in cache for batch mode. With batch mode gone, switch to `index::extract_public_api()` which returns only `(Vec<String>, Vec<String>)` (types, functions). This avoids computing skeletons (including body analysis) that code_map never uses.
 
-**Bump `CACHE_VERSION` to 7.** The `CacheEntry` struct changes (skeleton field removed), so existing caches will be invalidated and rebuilt on next call.
+**Reset `CACHE_VERSION` to 1.** This is a major overhaul — start fresh rather than incrementing from the old version scheme. Old caches are simply discarded.
 
 **Updated `CacheEntry`:**
 ```rust
@@ -54,7 +54,6 @@ struct CacheEntry {
     public_types: Vec<String>,
     public_functions: Vec<String>,
     tags: Vec<String>,
-    // skeleton field removed — index has its own cache
 }
 ```
 
@@ -142,7 +141,7 @@ All remaining tests calling `build_code_map(root, &[], &[])` must have the third
 
 **code_map — new/updated tests:**
 - Verify `extract_public_api` returns the same types/functions as `extract_all().0` (add a cross-check test)
-- Verify `CACHE_VERSION` bump invalidates old caches (test loads a v6 cache, confirms it's discarded)
+- Verify old caches are discarded (test loads a stale cache, confirms it's rebuilt)
 
 **Callers outside codemap.rs:** `benches/speed.rs` calls `build_code_map(dir.path(), &[], &[])` at 3 call sites — must remove the third argument.
 
@@ -178,7 +177,7 @@ Key differences from current flat output:
 - Files within each directory still sorted alphabetically
 - Files at repo root (no directory prefix) grouped under a `(root)` header or listed first without a header
 
-For result sets under `GROUPING_THRESHOLD`, current behavior is preserved — flat list with full signatures. If `code_map` is called with globs that narrow the result to <100 files, flat mode is used even if the full repo has 500+ files.
+For result sets under `GROUPING_THRESHOLD`, flat list with full signatures. If globs narrow the result to <100 files, flat mode is used even if the full repo has 500+ files.
 
 ### B) Truncation of long API lists
 
@@ -223,7 +222,7 @@ used_by:
   src/enrichment/ai_extractor.py (EnrichmentRecord)
 ```
 
-At depth 1 (default), output is identical to current behavior — flat list under `used_by:`.
+At depth 1 (default), flat list under `used_by:` with symbols shown.
 
 **Symbol sourcing for `used_by`:** Each entry shows the symbols that the *dependent* file imports from its parent in the tree. At depth 1, that's what the dependent imports from the queried file. At depth 2+, each entry shows what it imports from *its immediate parent in the tree*, not from the root file.
 
@@ -261,10 +260,8 @@ Changes to `src/mcp.rs`:
 
 ### Testing
 
-**Baseline first:** There are currently no unit tests for `query_deps` output format in `deps.rs`. Before modifying the function, add a baseline snapshot test that captures the current depth-1 output format. This ensures the backward-compatibility claim is verifiable.
-
 Unit tests with synthetic `DepsGraph`:
-- Depth 1: identical to baseline output (backward compatibility)
+- Depth 1: flat list with symbols
 - Depth 2: verify second-level dependents appear indented with arrow prefix
 - Depth 3: verify third level with double indentation
 - Cycle detection: A → B → A stops with `(cycle)` marker
@@ -343,11 +340,11 @@ Call code_map first when exploring a codebase, then index on files of interest.
 
 | Cache | Change | Version bump? |
 |-------|--------|---------------|
-| `.cache/taoki/code-map.json` | Remove `skeleton` field from `CacheEntry` | Yes — v6 → v7 |
+| `.cache/taoki/code-map.json` | Remove `skeleton` field from `CacheEntry`, reset version to 1 | Yes — fresh start |
 | `.cache/taoki/index.json` | **New** — file-based cache for index skeletons | New file, starts at v1 |
 | `.cache/taoki/deps.json` | No structural change — depth is query-time BFS, symbols already stored | No |
 
-The code_map cache version bump means existing caches are rebuilt on first call after upgrade. This is a one-time cost, same as previous version bumps.
+Old caches are discarded on first call after upgrade — clean slate.
 
 ---
 
@@ -355,14 +352,14 @@ The code_map cache version bump means existing caches are rebuilt on first call 
 
 | Area | Files | Change Size | Risk |
 |------|-------|-------------|------|
-| `codemap.rs` — remove batch skeletons, remove skeleton from cache, switch to `extract_public_api`, directory grouping, truncation, delete 8 tests, update remaining test signatures | 1 | ~200 lines changed + tests | Medium — cache version bump, output format change |
+| `codemap.rs` — remove batch skeletons, remove skeleton from cache, drop `#[serde(default)]` annotations, switch to `extract_public_api`, directory grouping, truncation, delete 8 tests, update remaining test signatures | 1 | ~200 lines changed + tests | Medium — output format change |
 | `mcp.rs` — remove `files` parsing, add index disk cache, add `find_repo_root`, add `depth` parsing for deps | 1 | ~130 lines + tests | Low — additive caching, existing in-memory cache preserved |
 | `deps.rs` — depth BFS + symbol rendering in `query_deps`, baseline test | 1 | ~100 lines + tests | Low — additive, default=1 preserves behavior |
 | `benches/speed.rs` — remove third arg from `build_code_map` calls | 1 | ~3 lines | None — signature alignment |
 | Hook scripts + hooks.json | 5 files | ~25 lines total | None — text only |
 | `CLAUDE.md` | 1 | Documentation updates | None |
 
-Total: ~430-450 lines of Rust changes, ~25 lines of shell. Backward-compatible except for code_map cache rebuild on upgrade.
+Total: ~430-450 lines of Rust changes, ~25 lines of shell.
 
 ## Post-Implementation
 
@@ -371,7 +368,7 @@ Update `CLAUDE.md` to reflect:
 - `code_map` output format: directory grouping for >100 files, `GROUPING_THRESHOLD` constant
 - `FN_TRUNCATE_THRESHOLD` and `TYPE_TRUNCATE_THRESHOLD` constants
 - `code_map` now uses `extract_public_api()` instead of `extract_all()`
-- `CacheEntry` no longer has `skeleton` field, `CACHE_VERSION` is 7
+- `CacheEntry` no longer has `skeleton` field, `CACHE_VERSION` reset to 1
 - New index file-based cache at `.cache/taoki/index.json` with `INDEX_CACHE_VERSION`
 - `find_repo_root()` helper in `mcp.rs`
 - New `query_deps` signature with `depth` parameter
