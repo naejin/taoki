@@ -7,7 +7,7 @@ MCP (Model Context Protocol) server that provides structural code intelligence t
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"  # Rust toolchain not in default PATH
 cargo build
-cargo test                             # 112 unit tests, all inline (#[cfg(test)])
+cargo test                             # 96 unit tests, all inline (#[cfg(test)])
 cargo clippy                           # must pass with no warnings
 ```
 
@@ -17,9 +17,9 @@ There are no integration tests or test fixtures — tests use `tempfile` crate t
 
 Five modules under `src/`:
 
-- **`main.rs`** — MCP stdio transport. Auto-detects framing (Content-Length headers vs bare JSONL). Reads requests, dispatches to `mcp::handle_request`, writes responses. Supports CLI flags: `--version` (prints version), `--check-enrichment [path]` (quick staleness sampling for hook use), `--enrichment-status [path]` (full enrichment diff with per-file hashes for agent use). All flags exit before the MCP loop.
+- **`main.rs`** — MCP stdio transport. Auto-detects framing (Content-Length headers vs bare JSONL). Reads requests, dispatches to `mcp::handle_request`, writes responses. Supports `--version` flag (prints version from `Cargo.toml` and exits before MCP loop).
 - **`mcp.rs`** — JSON-RPC dispatch. Routes `initialize`, `ping`, `tools/list`, `tools/call`. Tool calls dispatch to `call_index`, `call_code_map`, and `call_dependencies`. Also handles filename-based test file detection (collapses entire test files in `index` output).
-- **`codemap.rs`** — `build_code_map()` walks a repo (respecting .gitignore), hashes files with blake3, caches results in `.cache/taoki/code-map.json` with file-level locking (fs2). Calls `index::extract_all` for each file to get both public API and structural skeleton in a single parse pass. Computes heuristic tags per file (`[entry-point]`, `[tests]`, `[error-types]`, `[module-root]`, etc.). Supports optional `files` parameter to include full skeletons inline for specific files. Also triggers dependency graph building via `deps.rs`. Loads and merges LLM enrichment data from `.cache/taoki/enriched.json` when available. Also provides `check_enrichment()` (quick staleness sampling — full presence check + hash sampling of up to 10 files), `enrichment_status()` (full diff with per-file hashes, stale reasons, and orphan detection), and `should_skip_path()` (filters generated/vendor/build paths from enrichment).
+- **`codemap.rs`** — `build_code_map()` walks a repo (respecting .gitignore), hashes files with blake3, caches results in `.cache/taoki/code-map.json` with file-level locking (fs2). Calls `index::extract_all` for each file to get both public API and structural skeleton in a single parse pass. Computes heuristic tags per file (`[entry-point]`, `[tests]`, `[error-types]`, `[module-root]`, etc.). Supports optional `files` parameter to include full skeletons inline for specific files. Also triggers dependency graph building via `deps.rs`.
 - **`deps.rs`** — Cross-file dependency graph. Extracts imports from source files using tree-sitter, resolves them to actual files in the repo (best-effort, language-specific), and builds a cached graph. Provides `query_deps()` to show depends_on/used_by/external for any file. Cache stored at `.cache/taoki/deps.json`.
 - **`index/`** — `index_file()` and `index_source()` use tree-sitter to parse source files and extract structural skeletons (imports, types, functions, impls, modules). `extract_all()` returns both the public API and skeleton in a single parse pass (used by `codemap.rs`). Language-specific extractors live in `index/languages/` — one file per language. TypeScript and JavaScript share `typescript.rs`. Each extractor implements `is_test_node()` to detect and collapse test code. The `index` tool outputs sections: `imports:`, `consts:`, `exprs:` (top-level expressions for Python/TypeScript), `types:`, `traits:`, `impls:`, `fns:`, `classes:`, `mod:`, `macros:`, and `tests:`. The first line of doc comments is extracted and rendered as `/// summary` between the entry header and its children, giving agents intent/contract information without reading source. Doc extraction uses `strip_doc_prefix()` and `extract_doc_line()` on the `LanguageExtractor` trait with a default sibling-walk implementation; Python overrides entirely (docstrings are body children, not siblings); Go adds an adjacency check (its `is_doc_comment` matches all comments, not just doc-specific syntax like `///` or `/**`). Doc lines are truncated at 120 chars. Functions and methods include body insights: `→ calls:` (deduplicated call graph), `→ match:` (match/switch arms), and `→ errors:` (error returns and `?` count).
 - **`index/body.rs`** — Body analysis for function/method declarations. `analyze_body()` walks function bodies using tree-sitter (skipping nested functions, closures, and class definitions) and extracts three kinds of insights: call graph (`extract_calls`), match/switch arms (`extract_match_arms`), and error return sites (`extract_error_returns`). Results are attached to `SkeletonEntry` via a `BodyInsights` struct and rendered by `format_lines()`. Supports all 6 languages.
@@ -32,7 +32,7 @@ Rust (.rs), Python (.py, .pyi), TypeScript (.ts, .tsx), JavaScript (.js, .jsx, .
 
 - All tree-sitter grammars pinned to 0.23, tree-sitter core at 0.26.
 - Error types use `thiserror` derive macros.
-- Cache is stored at `<repo>/.cache/taoki/` (gitignored): `code-map.json` (v4, with tags, skeletons, and docstrings), `deps.json` (dependency graph), and `enriched.json` (LLM-generated semantic summaries).
+- Cache is stored at `<repo>/.cache/taoki/` (gitignored): `code-map.json` (v4, with tags, skeletons, and docstrings), `deps.json` (dependency graph).
 - Files over 2MB are skipped (`MAX_FILE_SIZE` in `index/mod.rs`).
 - Struct fields are truncated after 8 fields (`FIELD_TRUNCATE_THRESHOLD`).
 - Body insights have per-category limits: 12 calls (`MAX_CALLS`), 10 match arms (`MAX_MATCH_ARMS`), 8 error returns (`MAX_ERRORS`). Call names truncated at 40 chars, match targets at 30, arms at 30, errors at 40.
@@ -58,10 +58,9 @@ Taoki is distributed via pre-built binaries on GitHub Releases and install scrip
 
 ## Hooks
 
-Six hooks in `hooks/hooks.json` enforce Taoki tool usage:
+Five hooks in `hooks/hooks.json` enforce Taoki tool usage:
 
 - **SessionStart (tools reminder):** Injects a message at session start reminding Claude about the three code intelligence tools and when to use them.
-- **SessionStart (enrichment):** Runs `check-enrichment.sh` which calls `taoki --check-enrichment` for definitive blake3-based staleness detection. If stale, directs Claude to dispatch the `taoki-enrich` agent before proceeding. Disabled via `TAOKI_NO_ENRICHMENT=1` env var. The hook gracefully degrades (exits silently) if the binary is unavailable or the repo root cannot be determined.
 - **PreToolUse (Read):** When Claude is about to Read a source file (`.rs`, `.py`, `.ts`, `.js`, `.go`, `.java`, etc.), injects a nudge suggesting `mcp__taoki__index` or `code_map(files=[...])` first. Does not block — always allows the Read.
 - **PreToolUse (Glob):** When Claude uses Glob, injects a tip about `mcp__taoki__code_map` as an alternative for structural exploration. Does not block.
 - **PreToolUse (Grep):** When Claude uses Grep, suggests `mcp__taoki__code_map` for structural exploration and `mcp__taoki__index` for file architecture. Does not block.
@@ -71,4 +70,4 @@ All hooks use command type (shell scripts) for zero-latency, deterministic behav
 
 ## Warning
 
-There is one known compiler warning: `framing` initial assignment in `main.rs:127` is flagged as unused because it's overwritten on first message. This is intentional — it provides a default before the first read.
+There is one known compiler warning: `framing` initial assignment in `main.rs:98` is flagged as unused because it's overwritten on first message. This is intentional — it provides a default before the first read.

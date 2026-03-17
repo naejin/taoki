@@ -34,58 +34,12 @@ struct CacheEntry {
     skeleton: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct EnrichmentCache {
-    #[serde(default)]
-    version: u32,
-    #[serde(default)]
-    model: String,
-    #[serde(default)]
-    repo_root_hash: String,
-    #[serde(default)]
-    files: HashMap<String, EnrichmentEntry>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct EnrichmentEntry {
-    pub hash: String,
-    pub enrichment: String,
-}
-
 const CACHE_VERSION: u32 = 4;
 const CACHE_DIR: &str = ".cache/taoki";
 const CACHE_FILE: &str = "code-map.json";
-const ENRICHMENT_FILE: &str = "enriched.json";
-const ENRICHMENT_VERSION: u32 = 1;
-
-const ENRICHMENT_SKIP_SEGMENTS: &[&str] = &[
-    "target/", "dist/", "build/", "generated/", "vendor/", "node_modules/",
-];
-
-const ENRICHMENT_SKIP_GLOBS: &[&str] = &[
-    ".generated.", ".gen.", ".pb.",
-];
-
-pub fn should_skip_path(rel_path: &str) -> bool {
-    let normalized = rel_path.replace('\\', "/");
-    for seg in ENRICHMENT_SKIP_SEGMENTS {
-        if normalized.contains(seg) {
-            return true;
-        }
-    }
-    // Check filename portion only for glob-like patterns
-    let filename = normalized.rsplit('/').next().unwrap_or(&normalized);
-    for pat in ENRICHMENT_SKIP_GLOBS {
-        if filename.contains(pat) {
-            return true;
-        }
-    }
-    false
-}
 
 struct FileResult {
     path: String,
-    hash: String,
     lines: usize,
     public_types: Vec<String>,
     public_functions: Vec<String>,
@@ -148,7 +102,7 @@ pub fn walk_files_public(root: &Path) -> Result<Vec<PathBuf>, CodeMapError> {
     walk_files(root, &[])
 }
 
-pub fn hash_file(path: &Path) -> std::io::Result<String> {
+fn hash_file(path: &Path) -> std::io::Result<String> {
     let data = std::fs::read(path)?;
     Ok(blake3::hash(&data).to_hex().to_string())
 }
@@ -190,55 +144,6 @@ fn load_cache(root: &Path) -> Cache {
         let _ = f.unlock();
     }
     result
-}
-
-pub fn enrichment_cache_path(root: &Path) -> PathBuf {
-    root.join(CACHE_DIR).join(ENRICHMENT_FILE)
-}
-
-pub fn load_enrichment_cache(root: &Path) -> HashMap<String, EnrichmentEntry> {
-    let debug = std::env::var("TAOKI_DEBUG").is_ok();
-    let path = enrichment_cache_path(root);
-    let data = match std::fs::read_to_string(&path) {
-        Ok(d) => d,
-        Err(_) => return HashMap::new(),
-    };
-    let cache: EnrichmentCache = match serde_json::from_str(&data) {
-        Ok(c) => c,
-        Err(e) => {
-            if debug {
-                eprintln!("[taoki] enrichment cache parse error: {e}");
-            }
-            return HashMap::new();
-        }
-    };
-    if cache.version != ENRICHMENT_VERSION {
-        if debug {
-            eprintln!(
-                "[taoki] enrichment cache version mismatch: got {}, expected {}",
-                cache.version, ENRICHMENT_VERSION
-            );
-        }
-        return HashMap::new();
-    }
-    if debug && !cache.model.is_empty() {
-        eprintln!("[taoki] enrichment cache produced by model: {}", cache.model);
-    }
-    let root_hash = blake3::hash(
-        root.canonicalize()
-            .unwrap_or_else(|_| root.to_path_buf())
-            .to_string_lossy()
-            .as_bytes(),
-    )
-    .to_hex()
-    .to_string();
-    if !cache.repo_root_hash.is_empty() && cache.repo_root_hash != root_hash {
-        if debug {
-            eprintln!("[taoki] enrichment cache repo root hash mismatch: expected {root_hash}");
-        }
-        return HashMap::new();
-    }
-    cache.files
 }
 
 fn save_cache(root: &Path, cache: &Cache) {
@@ -431,7 +336,6 @@ fn compute_tags(
 pub fn build_code_map(root: &Path, globs: &[String], detail_files: &[String]) -> Result<String, CodeMapError> {
     let files = walk_files(root, globs)?;
     let mut cache = load_cache(root);
-    let enrichments = load_enrichment_cache(root);
 
     let detail_set: std::collections::HashSet<String> = detail_files
         .iter()
@@ -469,7 +373,6 @@ pub fn build_code_map(root: &Path, globs: &[String], detail_files: &[String]) ->
             if cached.hash == hash {
                 results.push(FileResult {
                     path: rel.clone(),
-                    hash: hash.clone(),
                     lines: cached.lines,
                     public_types: cached.public_types.clone(),
                     public_functions: cached.public_functions.clone(),
@@ -518,7 +421,6 @@ pub fn build_code_map(root: &Path, globs: &[String], detail_files: &[String]) ->
                 Err(_) => {
                     results.push(FileResult {
                         path: rel.clone(),
-                        hash: String::new(),
                         lines,
                         public_types: Vec::new(),
                         public_functions: Vec::new(),
@@ -546,7 +448,6 @@ pub fn build_code_map(root: &Path, globs: &[String], detail_files: &[String]) ->
 
         results.push(FileResult {
             path: rel,
-            hash,
             lines,
             public_types,
             public_functions,
@@ -594,14 +495,6 @@ pub fn build_code_map(root: &Path, globs: &[String], detail_files: &[String]) ->
             "- {} ({} lines){tags_str} - public_types: {types_str} - public_functions: {fns_str}\n",
             fr.path, fr.lines
         ));
-        if let Some(enrich_entry) = enrichments.get(&fr.path) {
-            if enrich_entry.hash == fr.hash {
-                out.push_str(&format!(
-                    "  [enriched] {}\n",
-                    enrich_entry.enrichment.replace('\n', " ")
-                ));
-            }
-        }
         if detail_set.contains(&fr.path) && !fr.skeleton.is_empty() {
             out.push_str("  [skeleton]\n");
             for line in fr.skeleton.lines() {
@@ -611,181 +504,6 @@ pub fn build_code_map(root: &Path, globs: &[String], detail_files: &[String]) ->
     }
 
     Ok(out)
-}
-
-const CHECK_ENRICHMENT_SAMPLE_SIZE: usize = 10;
-
-pub fn check_enrichment(root: &Path) -> Result<String, CodeMapError> {
-    let files = walk_files(root, &[])?;
-
-    // Apply skip filter and collect relative paths with their absolute paths
-    let source_files: Vec<(String, PathBuf)> = files
-        .into_iter()
-        .filter_map(|f| {
-            let rel = f.strip_prefix(root).unwrap_or(&f)
-                .to_string_lossy().replace('\\', "/");
-            if should_skip_path(&rel) { None } else { Some((rel, f)) }
-        })
-        .collect();
-
-    if source_files.is_empty() {
-        let result = serde_json::json!({"stale": false});
-        return Ok(serde_json::to_string(&result).unwrap());
-    }
-
-    // Load enrichment cache
-    let enrichment_path = enrichment_cache_path(root);
-    if !enrichment_path.exists() {
-        let result = serde_json::json!({"stale": true, "reason": "no enrichment cache"});
-        return Ok(serde_json::to_string(&result).unwrap());
-    }
-
-    let enrichments = load_enrichment_cache(root);
-
-    // Full presence check (cheap — HashMap lookup per file, no I/O)
-    let mut missing = 0usize;
-    let mut present_files: Vec<&(String, PathBuf)> = Vec::new();
-    for sf in &source_files {
-        if enrichments.contains_key(&sf.0) {
-            present_files.push(sf);
-        } else {
-            missing += 1;
-        }
-    }
-
-    if missing > 0 {
-        let result = serde_json::json!({
-            "stale": true,
-            "reason": format!("{missing} files missing from enrichment cache")
-        });
-        return Ok(serde_json::to_string(&result).unwrap());
-    }
-
-    // Sample up to N present files for hash comparison
-    let cache = load_cache(root);
-    let priority_tags = ["entry-point", "module-root"];
-
-    let mut priority_files: Vec<&(String, PathBuf)> = present_files.iter()
-        .filter(|(rel, _)| {
-            cache.files.get(rel)
-                .map(|c| c.tags.iter().any(|t| priority_tags.contains(&t.as_str())))
-                .unwrap_or(false)
-        })
-        .copied()
-        .collect();
-
-    let mut other_files: Vec<&(String, PathBuf)> = present_files.iter()
-        .filter(|f| !priority_files.contains(f))
-        .copied()
-        .collect();
-
-    let mut sample: Vec<&(String, PathBuf)> = Vec::new();
-    sample.append(&mut priority_files);
-    sample.append(&mut other_files);
-    sample.truncate(CHECK_ENRICHMENT_SAMPLE_SIZE);
-
-    let mut mismatched = 0usize;
-
-    for (rel, abs_path) in &sample {
-        let hash = match hash_file(abs_path) {
-            Ok(h) => h,
-            Err(_) => continue,
-        };
-        if let Some(entry) = enrichments.get(rel.as_str()) {
-            if entry.hash != hash {
-                mismatched += 1;
-            }
-        }
-    }
-
-    if mismatched > 0 {
-        let result = serde_json::json!({
-            "stale": true,
-            "reason": format!("{mismatched} hash mismatch")
-        });
-        Ok(serde_json::to_string(&result).unwrap())
-    } else {
-        let result = serde_json::json!({"stale": false});
-        Ok(serde_json::to_string(&result).unwrap())
-    }
-}
-
-pub fn enrichment_status(root: &Path) -> Result<String, CodeMapError> {
-    let files = walk_files(root, &[])?;
-    let enrichments = load_enrichment_cache(root);
-
-    let root_hash = blake3::hash(
-        root.canonicalize()
-            .unwrap_or_else(|_| root.to_path_buf())
-            .to_string_lossy()
-            .as_bytes(),
-    )
-    .to_hex()
-    .to_string();
-
-    let mut stale_files: Vec<serde_json::Value> = Vec::new();
-    let mut fresh_count: usize = 0;
-    let mut seen_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    for file_path in &files {
-        let rel = file_path
-            .strip_prefix(root)
-            .unwrap_or(file_path)
-            .to_string_lossy()
-            .replace('\\', "/");
-
-        if should_skip_path(&rel) {
-            continue;
-        }
-
-        seen_paths.insert(rel.clone());
-
-        let hash = match hash_file(file_path) {
-            Ok(h) => h,
-            Err(_) => continue,
-        };
-
-        match enrichments.get(&rel) {
-            Some(entry) if entry.hash == hash => {
-                fresh_count += 1;
-            }
-            Some(_) => {
-                stale_files.push(serde_json::json!({
-                    "path": rel,
-                    "hash": hash,
-                    "reason": "hash_mismatch"
-                }));
-            }
-            None => {
-                stale_files.push(serde_json::json!({
-                    "path": rel,
-                    "hash": hash,
-                    "reason": "missing"
-                }));
-            }
-        }
-    }
-
-    // Find orphaned entries
-    let orphaned: Vec<String> = enrichments
-        .keys()
-        .filter(|k| !seen_paths.contains(*k))
-        .cloned()
-        .collect();
-
-    let total_count = fresh_count + stale_files.len();
-    let is_stale = !stale_files.is_empty() || !orphaned.is_empty();
-
-    let result = serde_json::json!({
-        "stale": is_stale,
-        "repo_root_hash": root_hash,
-        "files": stale_files,
-        "orphaned": orphaned,
-        "fresh_count": fresh_count,
-        "total_count": total_count
-    });
-
-    Ok(serde_json::to_string(&result).unwrap())
 }
 
 #[cfg(test)]
@@ -870,81 +588,6 @@ mod tests {
     }
 
     #[test]
-    fn loads_enrichment_cache() {
-        let dir = tempfile::tempdir().unwrap();
-        let cache_dir = dir.path().join(".cache/taoki");
-        fs::create_dir_all(&cache_dir).unwrap();
-
-        let root_hash = blake3::hash(
-            dir.path()
-                .canonicalize()
-                .unwrap()
-                .to_string_lossy()
-                .as_bytes(),
-        )
-        .to_hex()
-        .to_string();
-
-        let cache = serde_json::json!({
-            "version": 1,
-            "model": "haiku",
-            "repo_root_hash": root_hash,
-            "files": {
-                "src/main.rs": {
-                    "hash": "abc123",
-                    "enrichment": "Entry point for the application."
-                }
-            }
-        });
-        fs::write(
-            cache_dir.join("enriched.json"),
-            serde_json::to_string(&cache).unwrap(),
-        )
-        .unwrap();
-
-        let entries = load_enrichment_cache(dir.path());
-        assert_eq!(entries.len(), 1);
-        assert_eq!(
-            entries["src/main.rs"].enrichment,
-            "Entry point for the application."
-        );
-    }
-
-    #[test]
-    fn enrichment_cache_wrong_version_returns_empty() {
-        let dir = tempfile::tempdir().unwrap();
-        let cache_dir = dir.path().join(".cache/taoki");
-        fs::create_dir_all(&cache_dir).unwrap();
-
-        let cache = serde_json::json!({
-            "version": 999,
-            "model": "haiku",
-            "repo_root_hash": "",
-            "files": {
-                "src/main.rs": {
-                    "hash": "abc123",
-                    "enrichment": "Should be ignored."
-                }
-            }
-        });
-        fs::write(
-            cache_dir.join("enriched.json"),
-            serde_json::to_string(&cache).unwrap(),
-        )
-        .unwrap();
-
-        let entries = load_enrichment_cache(dir.path());
-        assert!(entries.is_empty());
-    }
-
-    #[test]
-    fn enrichment_cache_missing_file_returns_empty() {
-        let dir = tempfile::tempdir().unwrap();
-        let entries = load_enrichment_cache(dir.path());
-        assert!(entries.is_empty());
-    }
-
-    #[test]
     fn cache_stores_skeleton() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("lib.rs");
@@ -996,94 +639,6 @@ mod tests {
 
         let result = build_code_map(dir.path(), &[], &["./lib.rs".to_string()]).unwrap();
         assert!(result.contains("[skeleton]"), "should match with ./ prefix:\n{result}");
-    }
-
-    #[test]
-    fn code_map_enriched_before_skeleton() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("lib.rs");
-        fs::write(&file, "pub fn hello() {}\n").unwrap();
-
-        // Initialize git repo
-        std::process::Command::new("git").args(["init"]).current_dir(dir.path()).output().unwrap();
-
-        // Get file hash
-        let source = fs::read(&file).unwrap();
-        let hash = blake3::hash(&source).to_hex().to_string();
-
-        // Write enrichment cache
-        let root_hash = blake3::hash(
-            dir.path().canonicalize().unwrap().to_string_lossy().as_bytes(),
-        ).to_hex().to_string();
-        let cache_dir = dir.path().join(".cache/taoki");
-        fs::create_dir_all(&cache_dir).unwrap();
-        let enrichment = serde_json::json!({
-            "version": 1,
-            "model": "haiku",
-            "repo_root_hash": root_hash,
-            "files": {
-                "lib.rs": {
-                    "hash": hash,
-                    "enrichment": "Test enrichment."
-                }
-            }
-        });
-        fs::write(cache_dir.join("enriched.json"), serde_json::to_string(&enrichment).unwrap()).unwrap();
-
-        let result = build_code_map(dir.path(), &[], &["lib.rs".to_string()]).unwrap();
-        let enriched_pos = result.find("[enriched]").expect("should have enrichment");
-        let skeleton_pos = result.find("[skeleton]").expect("should have skeleton");
-        assert!(enriched_pos < skeleton_pos, "enriched should appear before skeleton:\n{result}");
-    }
-
-    #[test]
-    fn code_map_includes_enrichment() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("lib.rs");
-        fs::write(&file, "pub struct Foo {}\n").unwrap();
-
-        // First call to build the code-map cache and get the hash
-        let _ = build_code_map(dir.path(), &[], &[]).unwrap();
-
-        // Read the code-map cache to get the hash
-        let cache_path = dir.path().join(".cache/taoki/code-map.json");
-        let cache_data: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&cache_path).unwrap()).unwrap();
-        let file_hash = cache_data["files"]["lib.rs"]["hash"]
-            .as_str()
-            .unwrap()
-            .to_string();
-
-        // Write enrichment cache with matching hash
-        let root_hash = blake3::hash(
-            dir.path()
-                .canonicalize()
-                .unwrap()
-                .to_string_lossy()
-                .as_bytes(),
-        )
-        .to_hex()
-        .to_string();
-
-        let enrichment = serde_json::json!({
-            "version": 1,
-            "model": "haiku",
-            "repo_root_hash": root_hash,
-            "files": {
-                "lib.rs": {
-                    "hash": file_hash,
-                    "enrichment": "Library root module."
-                }
-            }
-        });
-        fs::write(
-            dir.path().join(".cache/taoki/enriched.json"),
-            serde_json::to_string(&enrichment).unwrap(),
-        )
-        .unwrap();
-
-        let result = build_code_map(dir.path(), &[], &[]).unwrap();
-        assert!(result.contains("[enriched] Library root module."));
     }
 
     #[test]
@@ -1191,271 +746,6 @@ mod tests {
         let result = build_code_map(dir.path(), &[], &["broken.rs".to_string()]).unwrap();
         assert!(result.contains("broken.rs"), "should list the file");
         assert!(!result.contains("[skeleton]"), "should have no skeleton for broken code:\n{result}");
-    }
-
-    #[test]
-    fn check_enrichment_no_cache_reports_stale() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("lib.rs"), "pub fn x() {}\n").unwrap();
-        let output = check_enrichment(dir.path()).unwrap();
-        let json: serde_json::Value = serde_json::from_str(&output).unwrap();
-        assert_eq!(json["stale"], true);
-        assert!(json["reason"].as_str().unwrap().contains("no enrichment cache"));
-    }
-
-    #[test]
-    fn check_enrichment_fresh_cache() {
-        use std::fs;
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("lib.rs");
-        fs::write(&file, "pub fn x() {}\n").unwrap();
-
-        let hash = hash_file(&file).unwrap();
-        let root_hash = blake3::hash(
-            dir.path().canonicalize().unwrap().to_string_lossy().as_bytes(),
-        ).to_hex().to_string();
-
-        let cache_dir = dir.path().join(".cache/taoki");
-        fs::create_dir_all(&cache_dir).unwrap();
-        let enrichment = serde_json::json!({
-            "version": 1, "model": "haiku", "repo_root_hash": root_hash,
-            "files": { "lib.rs": { "hash": hash, "enrichment": "Test." } }
-        });
-        fs::write(cache_dir.join("enriched.json"), serde_json::to_string(&enrichment).unwrap()).unwrap();
-
-        let output = check_enrichment(dir.path()).unwrap();
-        let json: serde_json::Value = serde_json::from_str(&output).unwrap();
-        assert_eq!(json["stale"], false);
-    }
-
-    #[test]
-    fn check_enrichment_hash_mismatch() {
-        use std::fs;
-        let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("lib.rs"), "pub fn x() {}\n").unwrap();
-
-        let root_hash = blake3::hash(
-            dir.path().canonicalize().unwrap().to_string_lossy().as_bytes(),
-        ).to_hex().to_string();
-
-        let cache_dir = dir.path().join(".cache/taoki");
-        fs::create_dir_all(&cache_dir).unwrap();
-        let enrichment = serde_json::json!({
-            "version": 1, "model": "haiku", "repo_root_hash": root_hash,
-            "files": { "lib.rs": { "hash": "wrong_hash", "enrichment": "Test." } }
-        });
-        fs::write(cache_dir.join("enriched.json"), serde_json::to_string(&enrichment).unwrap()).unwrap();
-
-        let output = check_enrichment(dir.path()).unwrap();
-        let json: serde_json::Value = serde_json::from_str(&output).unwrap();
-        assert_eq!(json["stale"], true);
-    }
-
-    #[test]
-    fn check_enrichment_orphans_dont_mask_missing() {
-        use std::fs;
-        let dir = tempfile::tempdir().unwrap();
-        // Two real files
-        let a = dir.path().join("a.rs");
-        let b = dir.path().join("b.rs");
-        fs::write(&a, "pub fn a() {}\n").unwrap();
-        fs::write(&b, "pub fn b() {}\n").unwrap();
-
-        let a_hash = hash_file(&a).unwrap();
-        let root_hash = blake3::hash(
-            dir.path().canonicalize().unwrap().to_string_lossy().as_bytes(),
-        ).to_hex().to_string();
-
-        let cache_dir = dir.path().join(".cache/taoki");
-        fs::create_dir_all(&cache_dir).unwrap();
-        // Enrichment has a.rs (fresh) + orphan.rs (gone), but NOT b.rs
-        // enriched_count (2) >= source_count (2), so old count check would pass
-        let enrichment = serde_json::json!({
-            "version": 1, "model": "haiku", "repo_root_hash": root_hash,
-            "files": {
-                "a.rs": { "hash": a_hash, "enrichment": "A." },
-                "orphan.rs": { "hash": "dead", "enrichment": "Gone." }
-            }
-        });
-        fs::write(cache_dir.join("enriched.json"), serde_json::to_string(&enrichment).unwrap()).unwrap();
-
-        let output = check_enrichment(dir.path()).unwrap();
-        let json: serde_json::Value = serde_json::from_str(&output).unwrap();
-        assert_eq!(json["stale"], true, "should detect b.rs missing even with orphan padding count");
-    }
-
-    #[test]
-    fn check_enrichment_skips_filtered_paths() {
-        use std::fs;
-        let dir = tempfile::tempdir().unwrap();
-        // Only a vendor file — should be skipped, no source files found
-        let vendor_dir = dir.path().join("vendor");
-        fs::create_dir_all(&vendor_dir).unwrap();
-        fs::write(vendor_dir.join("dep.rs"), "pub fn y() {}\n").unwrap();
-
-        let output = check_enrichment(dir.path()).unwrap();
-        let json: serde_json::Value = serde_json::from_str(&output).unwrap();
-        // No source files after filtering → not stale
-        assert_eq!(json["stale"], false);
-    }
-
-    #[test]
-    fn enrichment_status_provides_correct_hashes() {
-        use std::fs;
-        let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("lib.rs"), "pub fn x() {}\n").unwrap();
-
-        let actual_hash = hash_file(&dir.path().join("lib.rs")).unwrap();
-        let output = enrichment_status(dir.path()).unwrap();
-        let json: serde_json::Value = serde_json::from_str(&output).unwrap();
-        let files = json["files"].as_array().unwrap();
-        assert_eq!(files[0]["hash"].as_str().unwrap(), actual_hash);
-    }
-
-    #[test]
-    fn enrichment_status_skips_filtered_paths() {
-        use std::fs;
-        let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("lib.rs"), "pub fn x() {}\n").unwrap();
-        let vendor_dir = dir.path().join("vendor");
-        fs::create_dir_all(&vendor_dir).unwrap();
-        fs::write(vendor_dir.join("dep.rs"), "pub fn y() {}\n").unwrap();
-
-        let output = enrichment_status(dir.path()).unwrap();
-        let json: serde_json::Value = serde_json::from_str(&output).unwrap();
-
-        // vendor/dep.rs should not appear anywhere
-        let files = json["files"].as_array().unwrap();
-        assert!(!files.iter().any(|f| f["path"].as_str().unwrap().contains("vendor")));
-        assert_eq!(json["total_count"], 1); // only lib.rs
-    }
-
-    #[test]
-    fn enrichment_status_classifies_correctly() {
-        use std::fs;
-        let dir = tempfile::tempdir().unwrap();
-
-        // Create two source files
-        fs::write(dir.path().join("main.rs"), "fn main() {}\n").unwrap();
-        fs::write(dir.path().join("lib.rs"), "pub fn hello() {}\n").unwrap();
-
-        let main_hash = hash_file(&dir.path().join("main.rs")).unwrap();
-        let root_hash = blake3::hash(
-            dir.path().canonicalize().unwrap().to_string_lossy().as_bytes(),
-        ).to_hex().to_string();
-
-        // enriched.json: main.rs is fresh, lib.rs is missing, orphan.rs is orphaned
-        let cache_dir = dir.path().join(".cache/taoki");
-        fs::create_dir_all(&cache_dir).unwrap();
-        let enrichment = serde_json::json!({
-            "version": 1,
-            "model": "haiku",
-            "repo_root_hash": root_hash,
-            "files": {
-                "main.rs": { "hash": main_hash, "enrichment": "Entry point." },
-                "orphan.rs": { "hash": "dead", "enrichment": "Gone." }
-            }
-        });
-        fs::write(cache_dir.join("enriched.json"), serde_json::to_string(&enrichment).unwrap()).unwrap();
-
-        let output = enrichment_status(dir.path()).unwrap();
-        let json: serde_json::Value = serde_json::from_str(&output).unwrap();
-
-        // lib.rs should be stale (missing)
-        let files = json["files"].as_array().unwrap();
-        assert!(files.iter().any(|f| f["path"] == "lib.rs" && f["reason"] == "missing"));
-
-        // main.rs should be fresh (not in stale list)
-        assert!(!files.iter().any(|f| f["path"] == "main.rs"));
-
-        // orphan.rs should be in orphaned list
-        let orphaned = json["orphaned"].as_array().unwrap();
-        assert!(orphaned.iter().any(|v| v == "orphan.rs"));
-
-        // stale should be true (has stale files + orphans)
-        assert_eq!(json["stale"], true);
-
-        // fresh_count and total_count
-        assert_eq!(json["fresh_count"], 1);
-        assert_eq!(json["total_count"], 2);
-
-        // repo_root_hash should be present
-        assert_eq!(json["repo_root_hash"].as_str().unwrap(), root_hash);
-    }
-
-    #[test]
-    fn code_map_enrichment_uses_file_hash_not_cache_hash() {
-        use std::fs;
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("lib.rs");
-        fs::write(&file, "pub struct Foo {}\n").unwrap();
-
-        // Compute the actual blake3 hash of the file
-        let actual_hash = hash_file(&file).unwrap();
-
-        // Compute repo root hash
-        let root_hash = blake3::hash(
-            dir.path()
-                .canonicalize()
-                .unwrap()
-                .to_string_lossy()
-                .as_bytes(),
-        )
-        .to_hex()
-        .to_string();
-
-        // Write a STALE code-map cache with a WRONG hash
-        let cache_dir = dir.path().join(".cache/taoki");
-        fs::create_dir_all(&cache_dir).unwrap();
-        let stale_cache = serde_json::json!({
-            "version": CACHE_VERSION,
-            "files": {
-                "lib.rs": {
-                    "hash": "0000000000000000000000000000000000000000000000000000000000000000",
-                    "lines": 1,
-                    "public_types": ["Foo"],
-                    "public_functions": [],
-                    "tags": [],
-                    "skeleton": ""
-                }
-            }
-        });
-        fs::write(cache_dir.join("code-map.json"), serde_json::to_string(&stale_cache).unwrap()).unwrap();
-
-        // Write enrichment cache with the CORRECT file hash
-        let enrichment = serde_json::json!({
-            "version": 1,
-            "model": "haiku",
-            "repo_root_hash": root_hash,
-            "files": {
-                "lib.rs": {
-                    "hash": actual_hash,
-                    "enrichment": "Stale cache test."
-                }
-            }
-        });
-        fs::write(cache_dir.join("enriched.json"), serde_json::to_string(&enrichment).unwrap()).unwrap();
-
-        let result = build_code_map(dir.path(), &[], &[]).unwrap();
-        assert!(
-            result.contains("[enriched] Stale cache test."),
-            "enrichment should display even with stale code-map cache hash:\n{result}"
-        );
-    }
-
-    #[test]
-    fn skip_filter_matches_known_paths() {
-        assert!(should_skip_path("target/debug/build/foo.rs"));
-        assert!(should_skip_path("vendor/lib/bar.py"));
-        assert!(should_skip_path("node_modules/pkg/index.js"));
-        assert!(should_skip_path("dist/bundle.js"));
-        assert!(should_skip_path("src/generated/api.ts"));
-        assert!(should_skip_path("foo.generated.ts"));
-        assert!(should_skip_path("proto.pb.go"));
-        assert!(should_skip_path("foo.gen.rs"));
-        assert!(!should_skip_path("src/main.rs"));
-        assert!(!should_skip_path("src/codemap.rs"));
-        assert!(!should_skip_path("lib/target_utils.py"));
     }
 
     #[test]

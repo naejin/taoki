@@ -197,43 +197,6 @@ fn handle_tools_call(req: &JsonRpcRequest) -> JsonRpcResponse {
     JsonRpcResponse::success(req.id.clone(), serde_json::to_value(result).unwrap())
 }
 
-fn find_repo_root(path: &std::path::Path) -> Option<PathBuf> {
-    let mut current = if path.is_file() {
-        path.parent()?.to_path_buf()
-    } else {
-        path.to_path_buf()
-    };
-    let start = current.clone();
-    loop {
-        if current.join(".git").exists() {
-            return Some(current);
-        }
-        if !current.pop() {
-            break;
-        }
-    }
-    // Fallback: .cache/taoki/ directory (supports non-git workspaces)
-    current = start;
-    loop {
-        if current.join(".cache/taoki").is_dir() {
-            return Some(current);
-        }
-        if !current.pop() {
-            return None;
-        }
-    }
-}
-
-fn prepend_enrichment(skeleton: &str, enrichment: &str) -> String {
-    let mut out = String::from("summary:\n");
-    for line in enrichment.lines() {
-        out.push_str(&format!("  {line}\n"));
-    }
-    out.push('\n');
-    out.push_str(skeleton);
-    out
-}
-
 fn call_index(args: &Value) -> ToolResult {
     let path_str = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
     if path_str.is_empty() {
@@ -306,29 +269,7 @@ fn call_index(args: &Value) -> ToolResult {
     let hash = blake3::hash(&source).to_hex().to_string();
     let path_buf = path.to_path_buf();
 
-    // Look up enrichment data
-    let debug = std::env::var("TAOKI_DEBUG").is_ok();
-    let enrichment_text = find_repo_root(path).and_then(|root| {
-        let enrichments = codemap::load_enrichment_cache(&root);
-        let rel_path = path.strip_prefix(&root).ok()?;
-        let rel_str = rel_path.to_string_lossy().replace('\\', "/");
-        let entry = match enrichments.get(&*rel_str) {
-            Some(e) => e,
-            None => {
-                if debug {
-                    eprintln!("[taoki] no enrichment for {rel_str}");
-                }
-                return None;
-            }
-        };
-        if entry.hash == hash {
-            Some(entry.enrichment.clone())
-        } else {
-            None
-        }
-    });
-
-    // Check in-memory cache (stores un-enriched skeletons)
+    // Check in-memory cache
     let cached = INDEX_CACHE.with(|cache| {
         let cache = cache.borrow();
         cache.get(&path_buf).and_then(|(h, skeleton)| {
@@ -341,14 +282,10 @@ fn call_index(args: &Value) -> ToolResult {
     });
 
     if let Some(skeleton) = cached {
-        let final_skeleton = match &enrichment_text {
-            Some(e) => prepend_enrichment(&skeleton, e),
-            None => skeleton,
-        };
         return ToolResult {
             content: vec![ToolContent {
                 r#type: "text".to_string(),
-                text: final_skeleton,
+                text: skeleton,
             }],
             is_error: false,
         };
@@ -363,14 +300,10 @@ fn call_index(args: &Value) -> ToolResult {
                 .borrow_mut()
                 .insert(path_buf.clone(), (hash.clone(), base_skeleton.clone()));
         });
-        let skeleton = match &enrichment_text {
-            Some(e) => prepend_enrichment(&base_skeleton, e),
-            None => base_skeleton,
-        };
         return ToolResult {
             content: vec![ToolContent {
                 r#type: "text".to_string(),
-                text: skeleton,
+                text: base_skeleton,
             }],
             is_error: false,
         };
@@ -384,14 +317,10 @@ fn call_index(args: &Value) -> ToolResult {
                     .borrow_mut()
                     .insert(path_buf, (hash, raw_skeleton.clone()));
             });
-            let skeleton = match &enrichment_text {
-                Some(e) => prepend_enrichment(&raw_skeleton, e),
-                None => raw_skeleton,
-            };
             ToolResult {
                 content: vec![ToolContent {
                     r#type: "text".to_string(),
-                    text: skeleton,
+                    text: raw_skeleton,
                 }],
                 is_error: false,
             }
@@ -550,66 +479,6 @@ mod tests {
         let text = &result.content[0].text;
         assert!(text.contains("depends_on:") || text.contains("external:"),
             "should show dependencies:\n{text}");
-    }
-
-    #[test]
-    fn index_includes_enrichment_summary() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("lib.rs");
-        fs::write(&file, "pub fn hello() {}\n").unwrap();
-
-        // Initialize git repo so find_repo_root works
-        std::process::Command::new("git")
-            .args(["init"])
-            .current_dir(dir.path())
-            .output()
-            .unwrap();
-
-        // Get the file hash
-        let source = fs::read(&file).unwrap();
-        let hash = blake3::hash(&source).to_hex().to_string();
-
-        // Write enrichment cache
-        let root_hash = blake3::hash(
-            dir.path()
-                .canonicalize()
-                .unwrap()
-                .to_string_lossy()
-                .as_bytes(),
-        )
-        .to_hex()
-        .to_string();
-
-        let cache_dir = dir.path().join(".cache/taoki");
-        fs::create_dir_all(&cache_dir).unwrap();
-        let enrichment = serde_json::json!({
-            "version": 1,
-            "model": "haiku",
-            "repo_root_hash": root_hash,
-            "files": {
-                "lib.rs": {
-                    "hash": hash,
-                    "enrichment": "Library root.\nconventions: exports a single function."
-                }
-            }
-        });
-        fs::write(
-            cache_dir.join("enriched.json"),
-            serde_json::to_string(&enrichment).unwrap(),
-        )
-        .unwrap();
-
-        let result = call_index(&serde_json::json!({
-            "path": file.to_string_lossy()
-        }));
-        let text = &result.content[0].text;
-        assert!(
-            text.starts_with("summary:\n"),
-            "should start with summary:\n{text}"
-        );
-        assert!(text.contains("Library root."));
-        assert!(text.contains("conventions: exports a single function."));
-        assert!(text.contains("fns:"));
     }
 
     #[test]
