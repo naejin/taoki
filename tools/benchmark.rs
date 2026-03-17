@@ -96,6 +96,73 @@ fn validate_repos(repos: &[RepoEntry]) -> Vec<String> {
     errors
 }
 
+fn inject_content(content: &str, table: &str) -> Result<String, String> {
+    let start = content
+        .find(BENCH_START)
+        .ok_or_else(|| format!("{} marker not found", BENCH_START))?;
+    let end = content
+        .find(BENCH_END)
+        .ok_or_else(|| format!("{} marker not found", BENCH_END))?;
+
+    let before = &content[..start + BENCH_START.len()];
+    let after = &content[end..];
+    Ok(format!("{}\n{}{}", before, table, after))
+}
+
+fn inject_readme(readme_path: &str, table: &str) -> Result<(), String> {
+    let content = fs::read_to_string(readme_path)
+        .map_err(|e| format!("failed to read {}: {}", readme_path, e))?;
+    let new_content = inject_content(&content, table)?;
+    fs::write(readme_path, new_content)
+        .map_err(|e| format!("failed to write {}: {}", readme_path, e))?;
+    Ok(())
+}
+
+fn format_table(results: &[ProjectResult]) -> String {
+    let mut table = String::new();
+    table.push_str(
+        "| Project | Language | Files | Parsed | Parse % | Empty Skeletons | Reduction | Status |\n",
+    );
+    table.push_str(
+        "|---------|----------|-------|--------|---------|-----------------|-----------|--------|\n",
+    );
+    for r in results {
+        table.push_str(&format!(
+            "| {} | {} | {} | {} | {:.0}% | {} | {:.0}% | {} |\n",
+            r.name,
+            r.lang,
+            r.total_files,
+            r.parsed_ok,
+            r.parse_pct(),
+            r.empty_skeletons,
+            r.reduction_pct(),
+            if r.passed() { "PASS" } else { "FAIL" },
+        ));
+    }
+    table
+}
+
+fn format_error_summary(results: &[ProjectResult]) -> String {
+    let mut all_errors: HashMap<String, usize> = HashMap::new();
+    for r in results {
+        for (msg, count) in &r.errors {
+            *all_errors.entry(msg.clone()).or_insert(0) += count;
+        }
+    }
+    if all_errors.is_empty() {
+        return String::new();
+    }
+    let mut sorted: Vec<_> = all_errors.into_iter().collect();
+    sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    sorted.truncate(10);
+
+    let mut out = String::from("\nTop errors:\n");
+    for (msg, count) in &sorted {
+        out.push_str(&format!("  {}x {}\n", count, msg));
+    }
+    out
+}
+
 fn main() {
     println!("benchmark stub");
 }
@@ -212,5 +279,51 @@ mod tests {
     fn pass_with_no_files() {
         let r = make_result(0, 0, 0, 0, 0, 0);
         assert!(r.passed());
+    }
+
+    #[test]
+    fn error_summary_sorts_by_count() {
+        let mut errors = HashMap::new();
+        errors.insert("error A".into(), 3);
+        errors.insert("error B".into(), 7);
+        let results = vec![ProjectResult {
+            errors,
+            ..make_result(100, 10, 0, 50, 5000, 1000)
+        }];
+        let summary = format_error_summary(&results);
+        let a_pos = summary.find("error A").unwrap();
+        let b_pos = summary.find("error B").unwrap();
+        assert!(b_pos < a_pos, "higher-count error should appear first");
+    }
+
+    #[test]
+    fn error_summary_empty_when_no_errors() {
+        let results = vec![make_result(100, 0, 0, 50, 5000, 1000)];
+        assert!(format_error_summary(&results).is_empty());
+    }
+
+    #[test]
+    fn format_table_produces_valid_markdown() {
+        let results = vec![make_result(142, 0, 0, 80, 10000, 2200)];
+        let table = format_table(&results);
+        assert!(table.starts_with("| Project "));
+        assert!(table.contains("| test |"));
+        assert!(table.contains("| 142 |"));
+        assert!(table.contains("| PASS |"));
+    }
+
+    #[test]
+    fn inject_content_replaces_between_markers() {
+        let content = "before\n<!-- BENCH:START -->\nold data\n<!-- BENCH:END -->\nafter";
+        let result = inject_content(content, "| new | data |\n").unwrap();
+        assert!(result.contains("| new | data |"));
+        assert!(!result.contains("old data"));
+        assert!(result.contains("before"));
+        assert!(result.contains("after"));
+    }
+
+    #[test]
+    fn inject_content_errors_on_missing_markers() {
+        assert!(inject_content("no markers here", "table").is_err());
     }
 }
