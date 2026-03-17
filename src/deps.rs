@@ -394,6 +394,8 @@ fn resolve_within_crate(rest: &str, base: &Path, all_files: &[String]) -> Option
         let candidates = [
             base.join("src").join(format!("{path_str}.rs")),
             base.join("src").join(&path_str).join("mod.rs"),
+            base.join(format!("{path_str}.rs")),
+            base.join(&path_str).join("mod.rs"),
         ];
         for candidate in &candidates {
             let candidate_str = candidate.to_string_lossy().replace('\\', "/");
