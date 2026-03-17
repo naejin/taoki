@@ -117,16 +117,22 @@ try {
     $RunCmd = Join-Path $InstallDir "scripts\run.cmd"
     $ClaudePath = Get-Command claude -ErrorAction SilentlyContinue
     if ($ClaudePath) {
-        Write-Info "Registering MCP server with Claude Code..."
-        try {
-            & claude mcp remove taoki -s user 2>$null
-        } catch { }
-        try {
-            & claude mcp add -s user taoki -- $RunCmd
-            Write-Info "MCP server registered successfully."
-        } catch {
-            Write-Err "MCP registration failed. Register manually:"
-            Write-Err "  claude mcp add -s user taoki -- $RunCmd"
+        # Skip if already registered via a plugin marketplace
+        $mcpList = & claude mcp list 2>$null
+        if ($mcpList -match "plugin:.*taoki") {
+            Write-Info "MCP server already registered via plugin. Skipping."
+        } else {
+            Write-Info "Registering MCP server with Claude Code..."
+            try {
+                & claude mcp remove taoki -s user 2>$null
+            } catch { }
+            try {
+                & claude mcp add -s user taoki -- $RunCmd
+                Write-Info "MCP server registered successfully."
+            } catch {
+                Write-Err "MCP registration failed. Register manually:"
+                Write-Err "  claude mcp add -s user taoki -- $RunCmd"
+            }
         }
     } else {
         Write-Info "Claude Code not found on PATH. Register the MCP server manually:"

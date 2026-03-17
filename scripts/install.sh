@@ -154,14 +154,19 @@ fi
 
 # Register MCP server with Claude Code
 if command -v claude >/dev/null 2>&1; then
-  info "Registering MCP server with Claude Code..."
-  # Remove existing registration if present (idempotent reinstall)
-  claude mcp remove taoki -s user 2>/dev/null || true
-  if claude mcp add -s user taoki -- "$INSTALL_DIR/scripts/run.sh" 2>&1; then
-    info "MCP server registered successfully."
+  # Skip if already registered via a plugin marketplace
+  if claude mcp list 2>/dev/null | grep -q "plugin:.*taoki"; then
+    info "MCP server already registered via plugin. Skipping."
   else
-    error "MCP registration failed. Register manually:"
-    error "  claude mcp add -s user taoki -- $INSTALL_DIR/scripts/run.sh"
+    info "Registering MCP server with Claude Code..."
+    # Remove existing user-level registration if present (idempotent reinstall)
+    claude mcp remove taoki -s user 2>/dev/null || true
+    if claude mcp add -s user taoki -- "$INSTALL_DIR/scripts/run.sh" 2>&1; then
+      info "MCP server registered successfully."
+    else
+      error "MCP registration failed. Register manually:"
+      error "  claude mcp add -s user taoki -- $INSTALL_DIR/scripts/run.sh"
+    fi
   fi
 else
   info "Claude Code not found on PATH. Register the MCP server manually:"
