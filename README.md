@@ -178,6 +178,21 @@ Tested against 15 open-source projects (run `cargo run --bin benchmark --feature
 <!-- BENCH:START -->
 | Project | Language | Files | Parsed | Parse % | Empty Skeletons | Reduction | Status |
 |---------|----------|-------|--------|---------|-----------------|-----------|--------|
+| ripgrep | Rust | 100 | 100 | 100% | 0 | 79% | PASS |
+| tokio | Rust | 767 | 767 | 100% | 4 | 82% | PASS |
+| serde | Rust | 208 | 208 | 100% | 0 | 82% | PASS |
+| flask | Python | 83 | 83 | 100% | 0 | 85% | PASS |
+| fastapi | Python | 1122 | 1122 | 100% | 0 | 80% | PASS |
+| black | Python | 307 | 307 | 100% | 9 | 94% | FAIL |
+| next.js | TypeScript | 20812 | 20812 | 100% | 20 | 81% | PASS |
+| zod | TypeScript | 393 | 393 | 100% | 0 | 84% | PASS |
+| trpc | TypeScript | 863 | 863 | 100% | 0 | 79% | PASS |
+| caddy | Go | 301 | 301 | 100% | 0 | 80% | PASS |
+| cobra | Go | 36 | 36 | 100% | 0 | 88% | PASS |
+| hugo | Go | 916 | 916 | 100% | 5 | 81% | FAIL |
+| guava | Java | 3245 | 3245 | 100% | 0 | 73% | PASS |
+| spring-boot | Java | 8342 | 8342 | 100% | 3 | 61% | PASS |
+| deno | Rust, TS, JS | 5034 | 5034 | 100% | 21 | 73% | FAIL |
 <!-- BENCH:END -->
 
 *Results from v0.x.x against pinned commits. Run `cargo run --bin benchmark --features benchmark -- --update-pins` to refresh pins.*
