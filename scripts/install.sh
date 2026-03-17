@@ -39,13 +39,14 @@ if [ -d "$HOME/.claude/plugins/taoki" ]; then
   info "Cleaned up legacy install directory."
 fi
 
-# Add marketplace (remove first for idempotent reinstall)
-info "Adding marketplace..."
-claude plugin marketplace remove "$MARKETPLACE_NAME" 2>/dev/null || true
-if ! claude plugin marketplace add "$MARKETPLACE_REPO" 2>&1; then
-  error "Failed to add marketplace. Try manually:"
-  error "  claude plugin marketplace add ${MARKETPLACE_REPO}"
-  exit 1
+# Add marketplace if not already registered
+if ! claude plugin marketplace list 2>/dev/null | grep -q "$MARKETPLACE_NAME"; then
+  info "Adding marketplace..."
+  if ! claude plugin marketplace add "$MARKETPLACE_REPO" 2>&1; then
+    error "Failed to add marketplace. Try manually:"
+    error "  claude plugin marketplace add ${MARKETPLACE_REPO}"
+    exit 1
+  fi
 fi
 
 # Install or update plugin

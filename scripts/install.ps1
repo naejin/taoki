@@ -34,14 +34,16 @@ if (Test-Path $LegacyDir) {
     Write-Info "Cleaned up legacy install directory."
 }
 
-# Add marketplace (remove first for idempotent reinstall)
-Write-Info "Adding marketplace..."
-try { & claude plugin marketplace remove $MarketplaceName 2>$null } catch { }
-& claude plugin marketplace add $MarketplaceRepo
-if ($LASTEXITCODE -ne 0) {
-    Write-Err "Failed to add marketplace. Try manually:"
-    Write-Err "  claude plugin marketplace add $MarketplaceRepo"
-    exit 1
+# Add marketplace if not already registered
+$marketplaceList = & claude plugin marketplace list 2>$null
+if ($marketplaceList -notmatch $MarketplaceName) {
+    Write-Info "Adding marketplace..."
+    & claude plugin marketplace add $MarketplaceRepo
+    if ($LASTEXITCODE -ne 0) {
+        Write-Err "Failed to add marketplace. Try manually:"
+        Write-Err "  claude plugin marketplace add $MarketplaceName"
+        exit 1
+    }
 }
 
 # Install or update plugin
