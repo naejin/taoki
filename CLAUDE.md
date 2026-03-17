@@ -65,10 +65,10 @@ Rust (.rs), Python (.py, .pyi), TypeScript (.ts, .tsx), JavaScript (.js, .jsx, .
 
 Taoki is distributed via pre-built binaries on GitHub Releases and install scripts. No Rust toolchain required for end users.
 
-- **Install scripts:** `scripts/install.sh` (Linux/macOS) and `scripts/install.ps1` (Windows). Both download the correct binary from GitHub Releases, verify SHA256 checksums, do an atomic swap install to `~/.claude/plugins/taoki/`, and register the plugin with Claude Code.
+- **Install scripts:** `scripts/install.sh` (Linux/macOS) and `scripts/install.ps1` (Windows). Both download the correct binary from GitHub Releases, verify SHA256 checksums, do an atomic swap install to `~/.claude/plugins/taoki/`, and register the MCP server via `claude mcp add -s user taoki`. Also cleans up stale `.mcp.json` files from older releases.
 - **MCP entry points:** `scripts/run.sh` (Unix) and `scripts/run.cmd` (Windows). These have 3-way fallback: exec binary if present, `cargo build` if `Cargo.toml` exists (source clone), otherwise error with install hint.
 - **Release pipeline:** `.github/workflows/release.yml` triggers on `v*` tags. Cross-compiles for 5 targets (linux x86_64/aarch64, macos x86_64/aarch64, windows x86_64) using `cross` for Linux ARM64. Packages binary + plugin files into tarballs/zips, generates `checksums.txt`, publishes a GitHub Release.
-- **Release artifacts include:** `.mcp.json`, `.claude-plugin/`, `commands/`, `skills/`, `hooks/`, `agents/`, `scripts/run.sh`, `scripts/run.cmd`, and the binary at `target/release/taoki`. Source code, docs, and install scripts are excluded. The `.mcp.json` tells Claude Code how to start the MCP server; the Windows artifact uses `scripts/run.cmd` as the command while Unix artifacts use `scripts/run.sh`.
+- **Release artifacts include:** `.claude-plugin/`, `commands/`, `skills/`, `hooks/`, `agents/`, `scripts/run.sh`, `scripts/run.cmd`, and the binary at `target/release/taoki`. Source code, docs, and install scripts are excluded. `.mcp.json` is NOT included in artifacts — `plugin.json` inline `mcpServers` is the single source of truth for plugin MCP config. The Windows artifact's `plugin.json` is updated to reference `scripts/run.cmd` instead of `scripts/run.sh`.
 - **To publish a release:** `git tag v0.x.0 && git push origin v0.x.0`
 
 ## Hooks

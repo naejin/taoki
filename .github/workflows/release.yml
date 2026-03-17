@@ -76,7 +76,9 @@ jobs:
         run: |
           mkdir -p staging/taoki/target/release
           cp target/${{ matrix.target }}/release/taoki staging/taoki/target/release/
-          cp .mcp.json staging/taoki/
+          # Do NOT ship .mcp.json — plugin.json mcpServers is the single source of truth.
+          # Shipping .mcp.json caused conflicts: project-level format (mcpServers wrapper,
+          # relative paths) is incompatible with plugin context (needs ${CLAUDE_PLUGIN_ROOT}).
           cp -r .claude-plugin staging/taoki/
           cp -r commands staging/taoki/
           cp -r skills staging/taoki/
@@ -97,8 +99,14 @@ jobs:
         run: |
           mkdir -p staging/taoki/target/release
           cp target/${{ matrix.target }}/release/taoki.exe staging/taoki/target/release/
-          # Write Windows-specific .mcp.json pointing to run.cmd instead of run.sh
-          printf '{\n  "taoki": {\n    "command": "${CLAUDE_PLUGIN_ROOT}/scripts/run.cmd",\n    "args": []\n  }\n}\n' > staging/taoki/.mcp.json
+          # Update plugin.json to use run.cmd for Windows
+          python3 -c "
+          import json
+          p = '.claude-plugin/plugin.json'
+          d = json.load(open(p))
+          d['mcpServers']['taoki']['command'] = '\${CLAUDE_PLUGIN_ROOT}/scripts/run.cmd'
+          json.dump(d, open(p, 'w'), indent=2)
+          "
           cp -r .claude-plugin staging/taoki/
           cp -r commands staging/taoki/
           cp -r skills staging/taoki/

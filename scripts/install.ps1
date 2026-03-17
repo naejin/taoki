@@ -106,25 +106,36 @@ try {
         exit 1
     }
 
-    # Register plugin
+    # Remove stale .mcp.json if present (older releases shipped it, causing conflicts)
+    $StaleConfig = Join-Path $InstallDir ".mcp.json"
+    if (Test-Path $StaleConfig) {
+        Remove-Item -Force $StaleConfig
+        Write-Info "Removed stale .mcp.json (plugin.json is the MCP config source)."
+    }
+
+    # Register MCP server
+    $RunCmd = Join-Path $InstallDir "scripts\run.cmd"
     $ClaudePath = Get-Command claude -ErrorAction SilentlyContinue
     if ($ClaudePath) {
-        Write-Info "Registering plugin with Claude Code..."
+        Write-Info "Registering MCP server with Claude Code..."
         try {
-            & claude plugin add $InstallDir 2>$null
-            Write-Info "Plugin registered successfully."
+            & claude mcp remove taoki -s user 2>$null
+        } catch { }
+        try {
+            & claude mcp add -s user taoki -- $RunCmd
+            Write-Info "MCP server registered successfully."
         } catch {
-            Write-Info "Plugin may already be registered. Run manually if needed:"
-            Write-Info "  claude plugin add $InstallDir"
+            Write-Err "MCP registration failed. Register manually:"
+            Write-Err "  claude mcp add -s user taoki -- $RunCmd"
         }
     } else {
-        Write-Info "Claude Code not found on PATH. Register the plugin manually:"
-        Write-Info "  claude plugin add $InstallDir"
+        Write-Info "Claude Code not found on PATH. Register the MCP server manually:"
+        Write-Info "  claude mcp add -s user taoki -- $RunCmd"
     }
 
     Write-Host ""
     Write-Info "Taoki installed successfully!"
-    Write-Info "It will be available in your next Claude Code session."
+    Write-Info "Restart Claude Code to start using taoki."
 } finally {
     Remove-Item -Recurse -Force $TmpDir -ErrorAction SilentlyContinue
 }

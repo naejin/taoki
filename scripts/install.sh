@@ -145,20 +145,29 @@ fi
 INSTALLED_VERSION=$("$INSTALL_DIR/target/release/taoki" --version 2>/dev/null || echo "unknown")
 info "Installed ${INSTALLED_VERSION}"
 
-# Register plugin with Claude Code
+# Remove stale .mcp.json from plugin directory if present (older releases shipped it,
+# causing conflicts with plugin.json mcpServers). plugin.json is the single source of truth.
+if [ -f "$INSTALL_DIR/.mcp.json" ]; then
+  rm -f "$INSTALL_DIR/.mcp.json"
+  info "Removed stale .mcp.json (plugin.json is the MCP config source)."
+fi
+
+# Register MCP server with Claude Code
 if command -v claude >/dev/null 2>&1; then
-  info "Registering plugin with Claude Code..."
-  claude plugin add "$INSTALL_DIR" 2>/dev/null && {
-    info "Plugin registered successfully."
-  } || {
-    info "Plugin may already be registered. Run manually if needed:"
-    info "  claude plugin add $INSTALL_DIR"
-  }
+  info "Registering MCP server with Claude Code..."
+  # Remove existing registration if present (idempotent reinstall)
+  claude mcp remove taoki -s user 2>/dev/null || true
+  if claude mcp add -s user taoki -- "$INSTALL_DIR/scripts/run.sh" 2>&1; then
+    info "MCP server registered successfully."
+  else
+    error "MCP registration failed. Register manually:"
+    error "  claude mcp add -s user taoki -- $INSTALL_DIR/scripts/run.sh"
+  fi
 else
-  info "Claude Code not found on PATH. Register the plugin manually:"
-  info "  claude plugin add $INSTALL_DIR"
+  info "Claude Code not found on PATH. Register the MCP server manually:"
+  info "  claude mcp add -s user taoki -- $INSTALL_DIR/scripts/run.sh"
 fi
 
 echo ""
 info "${GREEN}Taoki installed successfully!${RESET}"
-info "It will be available in your next Claude Code session."
+info "Restart Claude Code to start using taoki."
