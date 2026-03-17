@@ -85,38 +85,9 @@ fn write_message(writer: &mut impl Write, msg: &str, framing: Framing) -> io::Re
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() > 1 {
-        match args[1].as_str() {
-            "--version" => {
-                println!("taoki {}", env!("CARGO_PKG_VERSION"));
-                return;
-            }
-            "--check-enrichment" => {
-                let path = if args.len() > 2 {
-                    std::path::PathBuf::from(&args[2])
-                } else {
-                    std::env::current_dir().unwrap_or_default()
-                };
-                match taoki::codemap::check_enrichment(&path) {
-                    Ok(json) => println!("{json}"),
-                    Err(_) => println!("{{\"stale\":false}}"),
-                }
-                return;
-            }
-            "--enrichment-status" => {
-                let path = if args.len() > 2 {
-                    std::path::PathBuf::from(&args[2])
-                } else {
-                    std::env::current_dir().unwrap_or_default()
-                };
-                match taoki::codemap::enrichment_status(&path) {
-                    Ok(json) => println!("{json}"),
-                    Err(_) => println!("{{\"stale\":false,\"files\":[],\"orphaned\":[],\"fresh_count\":0,\"total_count\":0,\"repo_root_hash\":\"\"}}"),
-                }
-                return;
-            }
-            _ => {}
-        }
+    if args.len() > 1 && args[1] == "--version" {
+        println!("taoki {}", env!("CARGO_PKG_VERSION"));
+        return;
     }
     eprintln!("taoki: MCP server starting");
 
