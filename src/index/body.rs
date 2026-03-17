@@ -127,29 +127,50 @@ fn walk_body(node: Node, lang: Language, visitor: &mut impl FnMut(Node)) {
 // --- Call extraction ---
 
 /// Extract the callee name and whether it's a method call from a call expression node.
-/// Returns `(name, is_method)` where `is_method` is true for calls on a receiver
-/// (e.g., `obj.method()`) and false for free/scoped calls (e.g., `foo()`, `Mod::func()`).
-fn extract_callee_name<'a>(node: Node<'a>, source: &'a [u8], lang: Language) -> Option<(&'a str, bool)> {
+/// Returns `(name, is_method)` where `is_method` is true for calls on a receiver.
+/// For method calls on compound receivers (field access depth >= 2), includes one level
+/// of receiver context: `self.client.get()` → `"client.get"`.
+fn extract_callee_name(node: Node, source: &[u8], lang: Language) -> Option<(String, bool)> {
     match lang {
         Language::Rust => {
             let func = node.child_by_field_name("function")?;
             match func.kind() {
-                "identifier" => Some((node_text(func, source), false)),
-                "scoped_identifier" => Some((node_text(func, source), false)),
+                "identifier" => Some((node_text(func, source).to_string(), false)),
+                "scoped_identifier" => Some((node_text(func, source).to_string(), false)),
                 "field_expression" => {
                     let field = func.child_by_field_name("field")?;
-                    Some((node_text(field, source), true))
+                    let value = func.child_by_field_name("value")?;
+                    let prefix = if value.kind() == "field_expression" {
+                        value.child_by_field_name("field").map(|f| node_text(f, source))
+                    } else {
+                        None
+                    };
+                    let name = match prefix {
+                        Some(p) => format!("{}.{}", p, node_text(field, source)),
+                        None => node_text(field, source).to_string(),
+                    };
+                    Some((name, true))
                 }
-                _ => Some((node_text(func, source), false)),
+                _ => Some((node_text(func, source).to_string(), false)),
             }
         }
         Language::Python => {
             let func = node.child_by_field_name("function")?;
             match func.kind() {
-                "identifier" => Some((node_text(func, source), false)),
+                "identifier" => Some((node_text(func, source).to_string(), false)),
                 "attribute" => {
                     let attr = func.child_by_field_name("attribute")?;
-                    Some((node_text(attr, source), true))
+                    let obj = func.child_by_field_name("object")?;
+                    let prefix = if obj.kind() == "attribute" {
+                        obj.child_by_field_name("attribute").map(|a| node_text(a, source))
+                    } else {
+                        None
+                    };
+                    let name = match prefix {
+                        Some(p) => format!("{}.{}", p, node_text(attr, source)),
+                        None => node_text(attr, source).to_string(),
+                    };
+                    Some((name, true))
                 }
                 _ => None,
             }
@@ -157,10 +178,20 @@ fn extract_callee_name<'a>(node: Node<'a>, source: &'a [u8], lang: Language) -> 
         Language::TypeScript | Language::JavaScript => {
             let func = node.child_by_field_name("function")?;
             match func.kind() {
-                "identifier" => Some((node_text(func, source), false)),
+                "identifier" => Some((node_text(func, source).to_string(), false)),
                 "member_expression" => {
                     let prop = func.child_by_field_name("property")?;
-                    Some((node_text(prop, source), true))
+                    let obj = func.child_by_field_name("object")?;
+                    let prefix = if obj.kind() == "member_expression" {
+                        obj.child_by_field_name("property").map(|p| node_text(p, source))
+                    } else {
+                        None
+                    };
+                    let name = match prefix {
+                        Some(p) => format!("{}.{}", p, node_text(prop, source)),
+                        None => node_text(prop, source).to_string(),
+                    };
+                    Some((name, true))
                 }
                 _ => None,
             }
@@ -168,18 +199,40 @@ fn extract_callee_name<'a>(node: Node<'a>, source: &'a [u8], lang: Language) -> 
         Language::Go => {
             let func = node.child_by_field_name("function")?;
             match func.kind() {
-                "identifier" => Some((node_text(func, source), false)),
+                "identifier" => Some((node_text(func, source).to_string(), false)),
                 "selector_expression" => {
                     let field = func.child_by_field_name("field")?;
-                    Some((node_text(field, source), true))
+                    let operand = func.child_by_field_name("operand")?;
+                    let prefix = if operand.kind() == "selector_expression" {
+                        operand.child_by_field_name("field").map(|f| node_text(f, source))
+                    } else {
+                        None
+                    };
+                    let name = match prefix {
+                        Some(p) => format!("{}.{}", p, node_text(field, source)),
+                        None => node_text(field, source).to_string(),
+                    };
+                    Some((name, true))
                 }
                 _ => None,
             }
         }
         Language::Java => {
-            let name = node.child_by_field_name("name")?;
-            let is_method = node.child_by_field_name("object").is_some();
-            Some((node_text(name, source), is_method))
+            let call_name = node.child_by_field_name("name")?;
+            let object = node.child_by_field_name("object");
+            let is_method = object.is_some();
+            let prefix = object.and_then(|obj| {
+                if obj.kind() == "field_access" {
+                    obj.child_by_field_name("field").map(|f| node_text(f, source))
+                } else {
+                    None
+                }
+            });
+            let name = match prefix {
+                Some(p) => format!("{}.{}", p, node_text(call_name, source)),
+                None => node_text(call_name, source).to_string(),
+            };
+            Some((name, is_method))
         }
     }
 }
@@ -207,8 +260,8 @@ fn extract_calls(body: Node, source: &[u8], lang: Language) -> (Vec<String>, Vec
     walk_body(body, lang, &mut |node| {
         if is_call_node(node, lang) {
             if let Some((name, is_method)) = extract_callee_name(node, source, lang) {
-                if !is_noise_call(name, lang) {
-                    let truncated = truncate(name, INSIGHT_CALL_TRUNCATE);
+                if !is_noise_call(&name, lang) {
+                    let truncated = truncate(&name, INSIGHT_CALL_TRUNCATE);
                     if is_method {
                         methods.insert(truncated);
                     } else {
@@ -1529,5 +1582,139 @@ class Example {
         assert!(calls.contains(&"make".to_string()), "should capture call in variable initializer");
         assert!(calls.contains(&"validate".to_string()), "should capture call in var initializer");
         assert!(calls.contains(&"process".to_string()));
+    }
+
+    // --- Receiver context tests ---
+
+    #[test]
+    fn test_receiver_context_rust_chained() {
+        // self.client.get() → client.get
+        let src = r#"
+struct S { client: Client }
+impl S {
+    fn example(&self) {
+        self.client.get("url");
+        self.items.push(1);
+        plain_call();
+        foo.bar();
+    }
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Rust);
+        let root = tree.root_node();
+        // Find the impl block → declaration_list → function_item
+        let mut cursor = root.walk();
+        let impl_node = root.children(&mut cursor)
+            .find(|c| c.kind() == "impl_item")
+            .unwrap();
+        let decl_list = impl_node.children(&mut impl_node.walk())
+            .find(|c| c.kind() == "declaration_list")
+            .unwrap();
+        let fn_node = decl_list.children(&mut decl_list.walk())
+            .find(|c| c.kind() == "function_item")
+            .unwrap();
+        let insights = analyze_body(fn_node, &bytes, Language::Rust);
+        assert!(insights.calls.contains(&"plain_call".to_string()), "free call missing");
+        assert!(insights.method_calls.contains(&"client.get".to_string()),
+            "expected client.get, got: {:?}", insights.method_calls);
+        assert!(insights.method_calls.contains(&"items.push".to_string()),
+            "expected items.push, got: {:?}", insights.method_calls);
+        // foo.bar() — foo is a simple identifier, no prefix
+        assert!(insights.method_calls.contains(&"bar".to_string()),
+            "expected bar (no prefix for simple receiver), got: {:?}", insights.method_calls);
+    }
+
+    #[test]
+    fn test_receiver_context_python() {
+        let src = r#"
+def example(self):
+    self.client.get("url")
+    items.append(1)
+    free_call()
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Python);
+        let root = tree.root_node();
+        let fn_node = root.child(0).unwrap();
+        let insights = analyze_body(fn_node, &bytes, Language::Python);
+        assert!(insights.calls.contains(&"free_call".to_string()));
+        assert!(insights.method_calls.contains(&"client.get".to_string()),
+            "expected client.get, got: {:?}", insights.method_calls);
+        // items.append — items is a simple identifier
+        assert!(insights.method_calls.contains(&"append".to_string()),
+            "expected append, got: {:?}", insights.method_calls);
+    }
+
+    #[test]
+    fn test_receiver_context_typescript() {
+        let src = r#"
+function example() {
+    this.client.get("url");
+    items.push(1);
+    freeFn();
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::TypeScript);
+        let root = tree.root_node();
+        let fn_node = root.child(0).unwrap();
+        let insights = analyze_body(fn_node, &bytes, Language::TypeScript);
+        assert!(insights.calls.contains(&"freeFn".to_string()));
+        assert!(insights.method_calls.contains(&"client.get".to_string()),
+            "expected client.get, got: {:?}", insights.method_calls);
+        assert!(insights.method_calls.contains(&"push".to_string()),
+            "expected push (simple receiver), got: {:?}", insights.method_calls);
+    }
+
+    #[test]
+    fn test_receiver_context_go() {
+        let src = r#"
+package main
+func example() {
+    resp.Body.Close()
+    fmt.Println("hi")
+    s.Do()
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Go);
+        let root = tree.root_node();
+        let mut cursor = root.walk();
+        let fn_node = root.children(&mut cursor)
+            .find(|c| c.kind() == "function_declaration")
+            .unwrap();
+        let insights = analyze_body(fn_node, &bytes, Language::Go);
+        assert!(insights.method_calls.contains(&"Body.Close".to_string()),
+            "expected Body.Close, got: {:?}", insights.method_calls);
+        // fmt.Println — fmt is identifier, no prefix
+        assert!(insights.method_calls.contains(&"Println".to_string()),
+            "expected Println, got: {:?}", insights.method_calls);
+        // s.Do — s is identifier, no prefix
+        assert!(insights.method_calls.contains(&"Do".to_string()),
+            "expected Do, got: {:?}", insights.method_calls);
+    }
+
+    #[test]
+    fn test_receiver_context_java() {
+        let src = r#"
+class Example {
+    void run() {
+        this.service.process();
+        items.add(1);
+        staticCall();
+    }
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Java);
+        let root = tree.root_node();
+        let class_node = root.child(0).unwrap();
+        let body = class_node.child_by_field_name("body").unwrap();
+        let mut cursor = body.walk();
+        let fn_node = body.children(&mut cursor)
+            .find(|c| c.kind() == "method_declaration")
+            .unwrap();
+        let insights = analyze_body(fn_node, &bytes, Language::Java);
+        assert!(insights.method_calls.contains(&"service.process".to_string()),
+            "expected service.process, got: {:?}", insights.method_calls);
+        // items.add — items is simple identifier
+        assert!(insights.method_calls.contains(&"add".to_string()),
+            "expected add, got: {:?}", insights.method_calls);
     }
 }
