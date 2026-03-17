@@ -199,23 +199,6 @@ Tested against 15 open-source projects (run `cargo run --bin benchmark --feature
 
 *Results from v0.9.3 against pinned commits. Run `cargo run --bin benchmark --features benchmark -- --update-pins` to refresh pins.*
 
-## Changelog
-
-### v0.9.3
-
-- **Real-world benchmarks** — benchmark binary validates taoki against 15 open-source projects (ripgrep, tokio, next.js, hugo, spring-boot, deno, etc.). 100% parse rate across 42k+ files, 60-94% token reduction. Run with `cargo run --bin benchmark --features benchmark`
-- **Minified file detection** — new `is_minified()` function and `[minified]` tag in `code_map`. Detects bundled/minified code by average line length, preventing empty skeleton noise from webpack bundles, jQuery, etc.
-- **Test data directory detection** — `is_test_filename` now recognizes files inside `testdata/`, `tests/data/`, `tests/fixtures/`, `__fixtures__/`, `src/test/resources/`, and other well-known test data directories
-
-### v0.9.2
-
-- **Test range fix** — test section ranges now include the last test's end line, not just start lines
-- **Java enum methods** — enum bodies with methods, fields, and constructors are fully extracted
-- **`pub(crate)` visibility** — `pub(crate)` and `pub(super)` items now appear in `code_map` visible API
-- **Split calls/methods** — body insights separate `→ calls:` (free/scoped) from `→ methods:` (method calls) for clearer signal
-- **Receiver context** — method calls include one level of receiver context (e.g. `self.client.get()` → `client.get`)
-- **Workspace-aware deps** — Rust dependency resolution now handles Cargo workspaces and cross-crate imports
-
 ## License
 
 MIT
