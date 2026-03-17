@@ -63,9 +63,9 @@ Rust (.rs), Python (.py, .pyi), TypeScript (.ts, .tsx), JavaScript (.js, .jsx, .
 
 ## Distribution
 
-Taoki is distributed as a Claude Code plugin via the `monet-plugins` marketplace hosted at `naejin/claude-plugins` on GitHub. No Rust toolchain required for end users.
+Taoki is distributed as a Claude Code plugin via the `monet-plugins` marketplace hosted at `naejin/monet-plugins` on GitHub. No Rust toolchain required for end users.
 
-- **Marketplace:** `naejin/claude-plugins` hosts `marketplace.json` pointing to `naejin/taoki` as a GitHub source. Users install with `claude plugin marketplace add naejin/claude-plugins && claude plugin install taoki@monet-plugins`.
+- **Marketplace:** `naejin/monet-plugins` hosts `marketplace.json` pointing to `naejin/taoki` as a GitHub source. Users install with `claude plugin marketplace add naejin/monet-plugins && claude plugin install taoki@monet-plugins`.
 - **MCP entry points:** `scripts/run.sh` (Unix) and `scripts/run.cmd` (Windows). These have 3-way fallback: exec binary if present, `cargo build` if Cargo.toml exists and Rust is installed (source clone), otherwise auto-download pre-built binary from GitHub Releases.
 - **Release pipeline:** `.github/workflows/release.yml` triggers on `v*` tags. Cross-compiles for 5 targets (linux x86_64/aarch64, macos x86_64/aarch64, windows x86_64) using `cross` for Linux ARM64. Packages binary + plugin files into tarballs/zips, generates `checksums.txt`, publishes a GitHub Release.
 - **Release artifacts include:** `.claude-plugin/`, `commands/`, `skills/`, `hooks/`, `agents/`, `scripts/run.sh`, `scripts/run.cmd`, and the binary at `target/release/taoki`. Source code, docs, and install scripts are excluded. `.mcp.json` is NOT included in artifacts — `plugin.json` inline `mcpServers` is the single source of truth for plugin MCP config. The Windows artifact's `plugin.json` is updated to reference `scripts/run.cmd` instead of `scripts/run.sh`.
