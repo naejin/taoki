@@ -183,7 +183,7 @@ For result sets under `GROUPING_THRESHOLD`, flat list with full signatures. If g
 
 Named constants control truncation: `FN_TRUNCATE_THRESHOLD` (8, show first 6) and `TYPE_TRUNCATE_THRESHOLD` (12, show first 10). When a file exceeds the threshold, the output shows `threshold - 2` items then `... +N more`.
 
-This caps the worst-case per-file output. The user who sees `... +9 more` knows to call `index` on that file for the full picture.
+This caps the worst-case per-file output. When truncated, append a cue: `... +9 more (use index for full list)`. This nudges agents toward the intended workflow.
 
 ### Implementation
 
@@ -222,7 +222,7 @@ used_by:
   src/enrichment/ai_extractor.py (EnrichmentRecord)
 ```
 
-At depth 1 (default), flat list under `used_by:` with symbols shown.
+At depth 1 (default), flat list under `used_by:` with symbols shown. When depth > 1, the section header includes it: `used_by (depth=2):` so users can tell at a glance what they're seeing.
 
 **Symbol sourcing for `used_by`:** Each entry shows the symbols that the *dependent* file imports from its parent in the tree. At depth 1, that's what the dependent imports from the queried file. At depth 2+, each entry shows what it imports from *its immediate parent in the tree*, not from the root file.
 
@@ -374,3 +374,4 @@ Update `CLAUDE.md` to reflect:
 - New `query_deps` signature with `depth` parameter
 - Updated hook descriptions
 - Updated tool descriptions for all three tools
+
