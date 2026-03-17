@@ -45,7 +45,6 @@ struct FileResult {
     public_functions: Vec<String>,
     tags: Vec<String>,
     parse_error: bool,
-    skeleton: String,
 }
 
 fn walk_files(root: &Path, globs: &[String]) -> Result<Vec<PathBuf>, CodeMapError> {
@@ -338,17 +337,47 @@ fn compute_tags(
     tags
 }
 
+/// Batch skeleton mode: return skeletons only for the listed files, no overview.
+fn build_batch_skeletons(root: &Path, detail_files: &[String]) -> Result<String, CodeMapError> {
+    let mut out = String::new();
+    for file_path in detail_files {
+        let normalized = file_path.replace('\\', "/");
+        let normalized = normalized.strip_prefix("./").unwrap_or(&normalized);
+        let abs_path = root.join(normalized);
+
+        let ext = abs_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let Some(lang) = Language::from_extension(ext) else {
+            continue;
+        };
+        let source = match std::fs::read(&abs_path) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let is_test = crate::mcp::is_test_filename(&abs_path);
+        let skeleton = if is_test {
+            let lines = source.iter().filter(|&&b| b == b'\n').count() + 1;
+            format!("tests: [1-{lines}]\n")
+        } else {
+            match index::index_source(&source, lang) {
+                Ok(s) => s,
+                Err(_) => continue,
+            }
+        };
+        out.push_str(&format!("# {normalized}\n"));
+        out.push_str(&skeleton);
+        out.push('\n');
+    }
+    Ok(out)
+}
+
 pub fn build_code_map(root: &Path, globs: &[String], detail_files: &[String]) -> Result<String, CodeMapError> {
+    // When files are requested, return skeletons only — no overview, no repo walk.
+    if !detail_files.is_empty() {
+        return build_batch_skeletons(root, detail_files);
+    }
+
     let files = walk_files(root, globs)?;
     let mut cache = load_cache(root);
-
-    let detail_set: std::collections::HashSet<String> = detail_files
-        .iter()
-        .map(|f| {
-            let normalized = f.replace('\\', "/");
-            normalized.strip_prefix("./").unwrap_or(&normalized).to_string()
-        })
-        .collect();
 
     // Invalidate cache if version changed
     if cache.version != CACHE_VERSION {
@@ -383,7 +412,6 @@ pub fn build_code_map(root: &Path, globs: &[String], detail_files: &[String]) ->
                     public_functions: cached.public_functions.clone(),
                     tags: cached.tags.clone(),
                     parse_error: false,
-                    skeleton: cached.skeleton.clone(),
                 });
                 new_files.insert(rel, CacheEntry {
                     hash,
@@ -431,7 +459,6 @@ pub fn build_code_map(root: &Path, globs: &[String], detail_files: &[String]) ->
                         public_functions: Vec::new(),
                         tags: Vec::new(),
                         parse_error: true,
-                        skeleton: String::new(),
                     });
                     continue;
                 }
@@ -458,7 +485,6 @@ pub fn build_code_map(root: &Path, globs: &[String], detail_files: &[String]) ->
             public_functions,
             tags,
             parse_error: false,
-            skeleton,
         });
     }
 
@@ -494,18 +520,16 @@ pub fn build_code_map(root: &Path, globs: &[String], detail_files: &[String]) ->
         let fns_str = if fr.public_functions.is_empty() {
             "(none)".to_string()
         } else {
-            fr.public_functions.join(", ")
+            fr.public_functions
+                .iter()
+                .map(|f| f.split_whitespace().collect::<Vec<_>>().join(" "))
+                .collect::<Vec<_>>()
+                .join(", ")
         };
         out.push_str(&format!(
             "- {} ({} lines){tags_str} - public_types: {types_str} - public_functions: {fns_str}\n",
             fr.path, fr.lines
         ));
-        if detail_set.contains(&fr.path) && !fr.skeleton.is_empty() {
-            out.push_str("  [skeleton]\n");
-            for line in fr.skeleton.lines() {
-                out.push_str(&format!("  {line}\n"));
-            }
-        }
     }
 
     Ok(out)
@@ -614,7 +638,7 @@ mod tests {
     }
 
     #[test]
-    fn code_map_with_files_includes_skeleton() {
+    fn code_map_with_files_returns_skeleton_only() {
         let dir = tempfile::tempdir().unwrap();
         let src_dir = dir.path().join("src");
         fs::create_dir(&src_dir).unwrap();
@@ -623,18 +647,13 @@ mod tests {
 
         let result = build_code_map(dir.path(), &[], &["src/lib.rs".to_string()]).unwrap();
 
-        // lib.rs should have skeleton
-        assert!(result.contains("[skeleton]"));
-        assert!(result.contains("Foo"));
-        assert!(result.contains("bar()"));
+        // Batch mode: lib.rs skeleton present with file header
+        assert!(result.contains("# src/lib.rs"), "should have file header:\n{result}");
+        assert!(result.contains("Foo"), "should contain type:\n{result}");
+        assert!(result.contains("bar()"), "should contain fn:\n{result}");
 
-        // main.rs should NOT have skeleton (not in files list)
-        let lines: Vec<&str> = result.lines().collect();
-        let main_idx = lines.iter().position(|l| l.contains("main.rs")).unwrap();
-        if main_idx + 1 < lines.len() {
-            assert!(!lines[main_idx + 1].contains("[skeleton]"),
-                "main.rs should not have skeleton");
-        }
+        // No overview — main.rs must not appear at all
+        assert!(!result.contains("main.rs"), "overview must be absent in batch mode:\n{result}");
     }
 
     #[test]
@@ -643,15 +662,17 @@ mod tests {
         fs::write(dir.path().join("lib.rs"), "pub fn hello() {}\n").unwrap();
 
         let result = build_code_map(dir.path(), &[], &["./lib.rs".to_string()]).unwrap();
-        assert!(result.contains("[skeleton]"), "should match with ./ prefix:\n{result}");
+        assert!(result.contains("# lib.rs"), "should match with ./ prefix:\n{result}");
+        assert!(result.contains("hello()"), "should contain fn signature:\n{result}");
     }
 
     #[test]
-    fn code_map_without_files_has_no_skeleton() {
+    fn code_map_overview_has_no_file_headers() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("lib.rs"), "pub fn hello() {}\n").unwrap();
         let result = build_code_map(dir.path(), &[], &[]).unwrap();
-        assert!(!result.contains("[skeleton]"), "should have no skeleton without files param:\n{result}");
+        assert!(!result.contains("# lib.rs"), "overview should not have file headers:\n{result}");
+        assert!(result.contains("lib.rs"), "overview should list file in one-liner:\n{result}");
     }
 
     #[test]
@@ -659,23 +680,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("lib.rs"), "pub fn hello() {}\n").unwrap();
         let result = build_code_map(dir.path(), &[], &["nonexistent.rs".to_string()]).unwrap();
-        assert!(!result.contains("[skeleton]"), "should have no skeleton for nonexistent file:\n{result}");
+        assert!(!result.contains("nonexistent.rs"), "nonexistent file should be skipped:\n{result}");
     }
 
     #[test]
-    fn code_map_skeleton_lines_indented() {
+    fn code_map_batch_returns_index_format() {
+        // Batch mode (files non-empty) returns raw index output with file headers, no overview.
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("lib.rs"), "pub fn hello() {}\n").unwrap();
         let result = build_code_map(dir.path(), &[], &["lib.rs".to_string()]).unwrap();
-        let in_skeleton = result.lines()
-            .skip_while(|l| !l.contains("[skeleton]"))
-            .skip(1)
-            .take_while(|l| !l.is_empty() && !l.starts_with("- "))
-            .collect::<Vec<_>>();
-        assert!(!in_skeleton.is_empty(), "should have skeleton lines");
-        for line in &in_skeleton {
-            assert!(line.starts_with("  "), "skeleton line should be indented: {line:?}");
-        }
+        // Has file header
+        assert!(result.starts_with("# lib.rs\n"), "should start with file header:\n{result}");
+        // Has index-format content (fns: section)
+        assert!(result.contains("fns:"), "should contain fns section:\n{result}");
+        assert!(result.contains("hello()"), "should contain fn:\n{result}");
+        // No overview one-liner
+        assert!(!result.contains("public_functions:"), "should have no overview:\n{result}");
     }
 
     #[test]
@@ -683,16 +703,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("test_auth.py"), "def test_login():\n    assert True\n\ndef test_logout():\n    pass\n").unwrap();
         let result = build_code_map(dir.path(), &[], &["test_auth.py".to_string()]).unwrap();
-        assert!(result.contains("[skeleton]"), "test file should still get skeleton block");
-        assert!(result.contains("tests:"), "skeleton should be collapsed tests:");
-        // Individual test names should not appear in the skeleton block itself
-        let skeleton_block: String = result.lines()
-            .skip_while(|l| !l.contains("[skeleton]"))
-            .skip(1)
-            .take_while(|l| !l.is_empty() && !l.starts_with("- "))
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(!skeleton_block.contains("test_login"), "individual test names should not appear in skeleton");
+        assert!(result.contains("# test_auth.py"), "should have file header:\n{result}");
+        assert!(result.contains("tests:"), "skeleton should be collapsed to tests: line:\n{result}");
+        assert!(!result.contains("test_login"), "individual test names should not appear:\n{result}");
     }
 
     #[test]
@@ -714,47 +727,42 @@ mod tests {
             }
         });
         fs::write(cache_dir.join("code-map.json"), serde_json::to_string(&old_cache).unwrap()).unwrap();
-        let result = build_code_map(dir.path(), &[], &["lib.rs".to_string()]).unwrap();
-        assert!(result.contains("[skeleton]"), "should rebuild cache and produce skeleton:\n{result}");
+        // Overview mode triggers cache rebuild
+        let result = build_code_map(dir.path(), &[], &[]).unwrap();
+        assert!(result.contains("lib.rs"), "should list file after cache rebuild:\n{result}");
         let cache_data: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(cache_dir.join("code-map.json")).unwrap()).unwrap();
         assert_eq!(cache_data["version"], CACHE_VERSION);
     }
 
     #[test]
-    fn cached_skeleton_matches_index_source() {
+    fn code_map_batch_matches_index_source() {
+        // Batch mode calls index_source directly — output must equal a fresh index call.
         let dir = tempfile::tempdir().unwrap();
         let source = "pub struct Foo {}\npub fn bar() {}\nfn private() {}\n";
         fs::write(dir.path().join("lib.rs"), source).unwrap();
-        build_code_map(dir.path(), &[], &[]).unwrap();
         let result = build_code_map(dir.path(), &[], &["lib.rs".to_string()]).unwrap();
-        let skeleton_start = result.find("[skeleton]").unwrap();
-        let skeleton_block: String = result[skeleton_start + "[skeleton]\n".len()..]
-            .lines()
-            .take_while(|l| !l.starts_with("- "))
-            .map(|l| l.strip_prefix("  ").unwrap_or(l))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let skeleton_block = result
+            .strip_prefix("# lib.rs\n")
+            .unwrap_or(&result);
         let fresh = crate::index::index_source(source.as_bytes(), crate::index::Language::Rust).unwrap();
         assert_eq!(skeleton_block.trim(), fresh.trim(),
-            "cached skeleton should match fresh index_source output");
+            "batch skeleton should match fresh index_source output");
     }
 
     #[test]
     fn code_map_parse_error_no_skeleton() {
         let dir = tempfile::tempdir().unwrap();
-        // Tree-sitter is error-tolerant, so broken syntax still parses (returns Ok,
-        // not Err) — meaning parse_error stays false. However, the skeleton is
-        // empty/minimal for garbage input, so the [skeleton] block is suppressed
-        // by the `!fr.skeleton.is_empty()` check, not by the parse_error flag.
+        // Tree-sitter is error-tolerant — broken syntax parses as Ok with minimal output.
+        // The file header still appears; no [skeleton] marker is used in batch mode.
         fs::write(dir.path().join("broken.rs"), "this is not valid rust {{{{").unwrap();
         let result = build_code_map(dir.path(), &[], &["broken.rs".to_string()]).unwrap();
-        assert!(result.contains("broken.rs"), "should list the file");
-        assert!(!result.contains("[skeleton]"), "should have no skeleton for broken code:\n{result}");
+        assert!(result.contains("broken.rs"), "should list the file:\n{result}");
     }
 
     #[test]
-    fn code_map_files_respects_globs_filter() {
+    fn code_map_globs_filter_overview() {
+        // Globs apply in overview mode (no files param).
         let dir = tempfile::tempdir().unwrap();
         let src_dir = dir.path().join("src");
         let lib_dir = dir.path().join("lib");
@@ -762,12 +770,39 @@ mod tests {
         fs::create_dir(&lib_dir).unwrap();
         fs::write(src_dir.join("main.rs"), "pub fn main() {}\n").unwrap();
         fs::write(lib_dir.join("helper.rs"), "pub fn help() {}\n").unwrap();
-        let result = build_code_map(
-            dir.path(),
-            &["src/**/*.rs".to_string()],
-            &["lib/helper.rs".to_string()],
-        ).unwrap();
-        assert!(!result.contains("helper.rs"), "helper.rs filtered by glob should not appear:\n{result}");
-        assert!(!result.contains("[skeleton]"), "no skeleton for glob-filtered file:\n{result}");
+        let result = build_code_map(dir.path(), &["src/**/*.rs".to_string()], &[]).unwrap();
+        assert!(result.contains("src/main.rs"), "src/main.rs should appear:\n{result}");
+        assert!(!result.contains("helper.rs"), "helper.rs outside glob should be excluded:\n{result}");
+    }
+
+    #[test]
+    fn code_map_multiline_signatures_collapsed_to_single_line() {
+        let dir = tempfile::tempdir().unwrap();
+        // Function with a multi-line signature (as it would appear in source)
+        fs::write(
+            dir.path().join("lib.rs"),
+            "pub fn long_fn(\n    a: &str,\n    b: usize,\n    c: bool,\n) -> Option<String> {\n    None\n}\n",
+        )
+        .unwrap();
+        let result = build_code_map(dir.path(), &[], &[]).unwrap();
+        // The one-liner entry must be exactly one line (no embedded newlines in the signature)
+        let file_line = result
+            .lines()
+            .find(|l| l.contains("lib.rs"))
+            .expect("lib.rs should appear in output");
+        assert!(
+            file_line.contains("long_fn("),
+            "signature should appear in one-liner: {file_line}"
+        );
+        assert!(
+            !file_line.contains('\n'),
+            "one-liner must not contain embedded newlines: {file_line}"
+        );
+        // The full output for this file should be exactly one line
+        assert_eq!(
+            result.lines().filter(|l| l.contains("lib.rs")).count(),
+            1,
+            "file entry should be a single line:\n{result}"
+        );
     }
 }

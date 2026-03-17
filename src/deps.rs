@@ -319,6 +319,7 @@ pub fn resolve_import(
     current_file: &str,
     all_files: &[String],
     crate_map: Option<&HashMap<String, PathBuf>>,
+    go_module_map: Option<&HashMap<String, PathBuf>>,
 ) -> Option<String> {
     match lang {
         Language::Rust => match crate_map {
@@ -331,7 +332,10 @@ pub fn resolve_import(
         Language::TypeScript | Language::JavaScript => {
             resolve_ts(import_path, current_file, all_files)
         }
-        Language::Go => None,
+        Language::Go => match go_module_map {
+            Some(map) if !map.is_empty() => resolve_go(import_path, all_files, map),
+            _ => None,
+        },
         Language::Java => resolve_java(import_path, all_files),
     }
 }
@@ -441,14 +445,18 @@ fn resolve_python(import_path: &str, current_file: &str, all_files: &[String]) -
         None
     } else {
         // Absolute import: replace . with /
+        // Try common source root layouts: flat (canopi/...), src-layout (src/canopi/...), etc.
         let path_str = import_path.replace('.', "/");
-        let candidates = [
-            format!("{path_str}.py"),
-            format!("{path_str}/__init__.py"),
-        ];
-        for candidate in &candidates {
-            if all_files.iter().any(|f| f == candidate) {
-                return Some(candidate.clone());
+        let source_roots = ["", "src/", "lib/", "app/", "python/", "source/"];
+        for root in &source_roots {
+            let candidates = [
+                format!("{root}{path_str}.py"),
+                format!("{root}{path_str}/__init__.py"),
+            ];
+            for candidate in &candidates {
+                if all_files.iter().any(|f| f == candidate) {
+                    return Some(candidate.clone());
+                }
             }
         }
         None
@@ -513,6 +521,80 @@ fn resolve_java(import_path: &str, all_files: &[String]) -> Option<String> {
     None
 }
 
+fn resolve_go(
+    import_path: &str,
+    all_files: &[String],
+    module_map: &HashMap<String, PathBuf>,
+) -> Option<String> {
+    for (module_name, module_dir) in module_map {
+        let rest = if import_path == module_name {
+            ""
+        } else if let Some(r) = import_path.strip_prefix(&format!("{module_name}/")) {
+            r
+        } else {
+            continue;
+        };
+
+        let pkg_dir = {
+            let base = module_dir.to_string_lossy().replace('\\', "/");
+            if base.is_empty() {
+                rest.to_string()
+            } else if rest.is_empty() {
+                base
+            } else {
+                format!("{base}/{rest}")
+            }
+        };
+
+        // Find the first non-test .go file directly inside this directory (no subdirs)
+        let prefix = if pkg_dir.is_empty() {
+            String::new()
+        } else {
+            format!("{pkg_dir}/")
+        };
+        if let Some(found) = all_files.iter().find(|f| {
+            f.ends_with(".go")
+                && !f.ends_with("_test.go")
+                && f.starts_with(&prefix)
+                && !f[prefix.len()..].contains('/')
+        }) {
+            return Some(found.clone());
+        }
+    }
+    None
+}
+
+/// Build a map of Go module paths to their directories by scanning for go.mod files.
+pub(crate) fn build_go_module_map(root: &Path) -> HashMap<String, PathBuf> {
+    let mut map = HashMap::new();
+    for entry in ignore::WalkBuilder::new(root).build().flatten() {
+        if entry.file_type().map(|t| t.is_file()).unwrap_or(false)
+            && entry.file_name() == "go.mod"
+        {
+            if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                if let Some(module_name) = extract_go_module_name(&content) {
+                    let dir = entry.path().parent().unwrap_or(root);
+                    let rel = dir.strip_prefix(root).unwrap_or(dir);
+                    map.insert(module_name, rel.to_path_buf());
+                }
+            }
+        }
+    }
+    map
+}
+
+fn extract_go_module_name(content: &str) -> Option<String> {
+    for line in content.lines() {
+        if let Some(rest) = line.trim().strip_prefix("module ") {
+            let name = rest.trim();
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
+}
+
 fn normalize_path(path: &Path) -> PathBuf {
     let mut components = Vec::new();
     for component in path.components() {
@@ -533,6 +615,7 @@ fn normalize_path(path: &Path) -> PathBuf {
 pub fn build_deps_graph(root: &Path, files: &[PathBuf]) -> DepsGraph {
     let mut graph: HashMap<String, FileImports> = HashMap::new();
     let crate_map = build_crate_map(root);
+    let go_module_map = build_go_module_map(root);
 
     // Build list of relative paths (as strings) for resolution
     let all_files: Vec<String> = files
@@ -574,6 +657,7 @@ pub fn build_deps_graph(root: &Path, files: &[PathBuf]) -> DepsGraph {
                 &rel,
                 &all_files,
                 if lang == Language::Rust { Some(&crate_map) } else { None },
+                if lang == Language::Go { Some(&go_module_map) } else { None },
             );
             let external = resolved.is_none();
             let path = resolved.unwrap_or_else(|| import_path.clone());
@@ -810,7 +894,7 @@ mod tests {
             "src/mcp.rs".to_string(),
         ];
         let result =
-            resolve_import("crate::codemap", Language::Rust, "src/mcp.rs", &all_files, None);
+            resolve_import("crate::codemap", Language::Rust, "src/mcp.rs", &all_files, None, None);
         assert_eq!(result, Some("src/codemap.rs".to_string()));
     }
 
@@ -823,6 +907,7 @@ mod tests {
             "src/main.rs",
             &all_files,
             None,
+            None,
         );
         assert_eq!(result, None);
     }
@@ -830,7 +915,7 @@ mod tests {
     #[test]
     fn python_relative_import_resolves() {
         let all_files = vec!["src/auth.py".to_string(), "src/api.py".to_string()];
-        let result = resolve_import(".auth", Language::Python, "src/api.py", &all_files, None);
+        let result = resolve_import(".auth", Language::Python, "src/api.py", &all_files, None, None);
         assert_eq!(result, Some("src/auth.py".to_string()));
     }
 
@@ -838,7 +923,7 @@ mod tests {
     fn ts_relative_import_resolves() {
         let all_files = vec!["src/utils.ts".to_string(), "src/main.ts".to_string()];
         let result =
-            resolve_import("./utils", Language::TypeScript, "src/main.ts", &all_files, None);
+            resolve_import("./utils", Language::TypeScript, "src/main.ts", &all_files, None, None);
         assert_eq!(result, Some("src/utils.ts".to_string()));
     }
 
@@ -846,7 +931,7 @@ mod tests {
     fn ts_bare_import_is_external() {
         let all_files = vec!["src/main.ts".to_string()];
         let result =
-            resolve_import("express", Language::TypeScript, "src/main.ts", &all_files, None);
+            resolve_import("express", Language::TypeScript, "src/main.ts", &all_files, None, None);
         assert_eq!(result, None);
     }
 
@@ -871,6 +956,7 @@ mod tests {
             "src/main/java/com/example/App.java",
             &all_files,
             None,
+            None,
         );
         assert_eq!(
             result,
@@ -882,7 +968,7 @@ mod tests {
     fn ts_d_ts_resolves() {
         let all_files = vec!["src/types.d.ts".to_string()];
         let result =
-            resolve_import("./types", Language::TypeScript, "src/main.ts", &all_files, None);
+            resolve_import("./types", Language::TypeScript, "src/main.ts", &all_files, None, None);
         assert_eq!(result, Some("src/types.d.ts".to_string()));
     }
 
@@ -977,6 +1063,7 @@ mod tests {
             "crate-a/src/lib.rs",
             &all_files,
             Some(&crate_map),
+            None,
         );
         assert_eq!(result, Some("crate-a/src/utils.rs".to_string()));
 
@@ -987,6 +1074,7 @@ mod tests {
             "crate-a/src/lib.rs",
             &all_files,
             Some(&crate_map),
+            None,
         );
         assert_eq!(result, Some("crate-b/src/types.rs".to_string()));
     }
@@ -996,7 +1084,7 @@ mod tests {
         let all_files = vec!["src/mcp.rs".to_string(), "src/index/mod.rs".to_string()];
         // No crate map -- single crate
         let result =
-            resolve_import("crate::mcp", Language::Rust, "src/main.rs", &all_files, None);
+            resolve_import("crate::mcp", Language::Rust, "src/main.rs", &all_files, None, None);
         assert_eq!(result, Some("src/mcp.rs".to_string()));
     }
 
@@ -1010,6 +1098,7 @@ mod tests {
             "src/lib.rs",
             &all_files,
             Some(&crate_map),
+            None,
         );
         assert_eq!(result, None);
     }
@@ -1029,6 +1118,7 @@ mod tests {
             "src/main.rs",
             &all_files,
             Some(&crate_map),
+            None,
         );
         assert_eq!(result, Some("src/mcp.rs".to_string()));
     }
@@ -1111,5 +1201,149 @@ mod tests {
             helper_deps.contains("src/main.rs"),
             "helper should be used by main:\n{helper_deps}"
         );
+    }
+
+    #[test]
+    fn python_absolute_import_flat_layout_resolves() {
+        let all_files = vec![
+            "canopi/enrichment/merge.py".to_string(),
+            "canopi/enrichment/__init__.py".to_string(),
+            "canopi/__init__.py".to_string(),
+        ];
+        let result = resolve_import(
+            "canopi.enrichment.merge",
+            Language::Python,
+            "canopi/pipeline.py",
+            &all_files,
+            None,
+            None,
+        );
+        assert_eq!(result, Some("canopi/enrichment/merge.py".to_string()));
+    }
+
+    #[test]
+    fn python_absolute_import_src_layout_resolves() {
+        // The reported bug: package is under src/, but resolver was generating bare paths
+        let all_files = vec![
+            "src/canopi/enrichment/merge.py".to_string(),
+            "src/canopi/enrichment/__init__.py".to_string(),
+            "src/canopi/__init__.py".to_string(),
+        ];
+        let result = resolve_import(
+            "canopi.enrichment.merge",
+            Language::Python,
+            "src/canopi/pipeline.py",
+            &all_files,
+            None,
+            None,
+        );
+        assert_eq!(result, Some("src/canopi/enrichment/merge.py".to_string()));
+    }
+
+    #[test]
+    fn python_absolute_import_package_resolves() {
+        // Import resolves to __init__.py when no direct .py match
+        let all_files = vec!["src/canopi/enrichment/__init__.py".to_string()];
+        let result = resolve_import(
+            "canopi.enrichment",
+            Language::Python,
+            "src/canopi/pipeline.py",
+            &all_files,
+            None,
+            None,
+        );
+        assert_eq!(
+            result,
+            Some("src/canopi/enrichment/__init__.py".to_string())
+        );
+    }
+
+    #[test]
+    fn go_resolves_internal_package() {
+        let all_files = vec![
+            "pkg/parser/parser.go".to_string(),
+            "pkg/parser/ast.go".to_string(),
+            "cmd/main.go".to_string(),
+        ];
+        let mut module_map = HashMap::new();
+        module_map.insert(
+            "github.com/owner/repo".to_string(),
+            PathBuf::from(""),
+        );
+        let result = resolve_import(
+            "github.com/owner/repo/pkg/parser",
+            Language::Go,
+            "cmd/main.go",
+            &all_files,
+            None,
+            Some(&module_map),
+        );
+        assert!(
+            result == Some("pkg/parser/parser.go".to_string())
+                || result == Some("pkg/parser/ast.go".to_string()),
+            "expected a file in pkg/parser/, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn go_external_import_returns_none() {
+        let all_files = vec!["cmd/main.go".to_string()];
+        let mut module_map = HashMap::new();
+        module_map.insert(
+            "github.com/owner/repo".to_string(),
+            PathBuf::from(""),
+        );
+        let result = resolve_import(
+            "github.com/some/external/pkg",
+            Language::Go,
+            "cmd/main.go",
+            &all_files,
+            None,
+            Some(&module_map),
+        );
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn go_resolves_submodule_package() {
+        // Monorepo: go.mod in a subdirectory
+        let all_files = vec![
+            "backend/internal/service/service.go".to_string(),
+            "backend/cmd/main.go".to_string(),
+        ];
+        let mut module_map = HashMap::new();
+        module_map.insert(
+            "github.com/owner/repo/backend".to_string(),
+            PathBuf::from("backend"),
+        );
+        let result = resolve_import(
+            "github.com/owner/repo/backend/internal/service",
+            Language::Go,
+            "backend/cmd/main.go",
+            &all_files,
+            None,
+            Some(&module_map),
+        );
+        assert_eq!(
+            result,
+            Some("backend/internal/service/service.go".to_string())
+        );
+    }
+
+    #[test]
+    fn build_go_module_map_reads_go_mod() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("go.mod"),
+            "module github.com/owner/myrepo\n\ngo 1.21\n",
+        )
+        .unwrap();
+        let map = build_go_module_map(dir.path());
+        assert_eq!(map.len(), 1);
+        assert!(
+            map.contains_key("github.com/owner/myrepo"),
+            "expected module key, got: {map:?}"
+        );
+        assert_eq!(map["github.com/owner/myrepo"], PathBuf::from(""));
     }
 }
