@@ -71,4 +71,4 @@ All hooks use command type (shell scripts) for zero-latency, deterministic behav
 
 ## Warning
 
-There is one known compiler warning: `framing` initial assignment in `main.rs:101` is flagged as unused because it's overwritten on first message. This is intentional — it provides a default before the first read.
+There is one known compiler warning: `framing` initial assignment in `main.rs:127` is flagged as unused because it's overwritten on first message. This is intentional — it provides a default before the first read.
