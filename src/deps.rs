@@ -386,7 +386,8 @@ fn resolve_rust_workspace(
 }
 
 /// Resolve a `::` path within a crate's directory.
-/// Tries `{base}/src/{path}.rs` and `{base}/src/{path}/mod.rs`.
+/// Tries `{base}/src/{path}.rs`, `{base}/src/{path}/mod.rs`,
+/// `{base}/{path}.rs`, and `{base}/{path}/mod.rs` (for crates not using `src/` layout).
 fn resolve_within_crate(rest: &str, base: &Path, all_files: &[String]) -> Option<String> {
     let parts: Vec<&str> = rest.split("::").collect();
     for take in (1..=parts.len()).rev() {
@@ -787,7 +788,7 @@ pub(crate) fn find_crate_root<'a>(
         };
         if prefix.is_empty() || file.starts_with(&prefix) {
             let len = prefix.len();
-            if len > best_len {
+            if len >= best_len {
                 best_len = len;
                 best = Some((name.as_str(), dir.as_path()));
             }
