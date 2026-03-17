@@ -68,7 +68,7 @@ Taoki is distributed via pre-built binaries on GitHub Releases and install scrip
 - **Install scripts:** `scripts/install.sh` (Linux/macOS) and `scripts/install.ps1` (Windows). Both download the correct binary from GitHub Releases, verify SHA256 checksums, do an atomic swap install to `~/.claude/plugins/taoki/`, and register the plugin with Claude Code.
 - **MCP entry points:** `scripts/run.sh` (Unix) and `scripts/run.cmd` (Windows). These have 3-way fallback: exec binary if present, `cargo build` if `Cargo.toml` exists (source clone), otherwise error with install hint.
 - **Release pipeline:** `.github/workflows/release.yml` triggers on `v*` tags. Cross-compiles for 5 targets (linux x86_64/aarch64, macos x86_64/aarch64, windows x86_64) using `cross` for Linux ARM64. Packages binary + plugin files into tarballs/zips, generates `checksums.txt`, publishes a GitHub Release.
-- **Release artifacts include:** `.claude-plugin/`, `commands/`, `skills/`, `hooks/`, `agents/`, `scripts/run.sh`, `scripts/run.cmd`, and the binary at `target/release/taoki`. Source code, docs, and install scripts are excluded.
+- **Release artifacts include:** `.mcp.json`, `.claude-plugin/`, `commands/`, `skills/`, `hooks/`, `agents/`, `scripts/run.sh`, `scripts/run.cmd`, and the binary at `target/release/taoki`. Source code, docs, and install scripts are excluded. The `.mcp.json` tells Claude Code how to start the MCP server; the Windows artifact uses `scripts/run.cmd` as the command while Unix artifacts use `scripts/run.sh`.
 - **To publish a release:** `git tag v0.x.0 && git push origin v0.x.0`
 
 ## Hooks
