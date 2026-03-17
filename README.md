@@ -69,6 +69,7 @@ external:
 - **Docstring extraction** — first line of doc comments (`///`, `/** */`, Python docstrings) shown inline as `/// summary`
 - **Body insights** — functions show call graphs (`→ calls:`), match/switch arms (`→ match:`), and error sites (`→ errors:`)
 - **Test collapsing** — test code detected and collapsed across all supported languages
+- **LLM enrichment** — optional semantic summaries via `taoki-enrich` agent, with robust blake3-based staleness detection
 - **Fast caching** — blake3 content hashing with file-level locking; repeated calls are near-instant
 - **Tree-sitter parsing** — accurate, fast, no regex heuristics
 - **6 languages** — Rust, Python, TypeScript, JavaScript, Go, Java
@@ -149,9 +150,19 @@ Once installed, Claude automatically has access to the three tools. Use them thr
 
 Taoki runs as an [MCP](https://modelcontextprotocol.io/) server over stdio. When Claude starts a session, it can call the three tools at any time:
 
-- **`code_map`** walks the repo (respecting `.gitignore`), hashes each file with [blake3](https://github.com/BLAKE3-team/BLAKE3), and extracts public API summaries using [tree-sitter](https://tree-sitter.github.io/). Results cached at `.cache/taoki/code-map.json`.
+- **`code_map`** walks the repo (respecting `.gitignore`), hashes each file with [blake3](https://github.com/BLAKE3-team/BLAKE3), and extracts public API summaries using [tree-sitter](https://tree-sitter.github.io/). Results cached at `.cache/taoki/code-map.json`. When LLM enrichment is available, semantic summaries are displayed inline.
 - **`index`** parses a single file and returns its structural skeleton. The first line of doc comments is extracted and shown inline (`/// summary`), giving agents intent/contract information without reading source. Function and method bodies are analyzed to show call graphs, match/switch arms, and error return sites as `→` insight lines. Test code is automatically detected and collapsed — Python (`test_*`, `Test*`), Go (`Test*`, `Benchmark*`), TypeScript/JS (`describe`, `it`, `test`), Rust (`#[test]`, `#[cfg(test)]`). Files matching test naming patterns are collapsed entirely.
 - **`dependencies`** queries a cached dependency graph (`.cache/taoki/deps.json`) showing internal imports, reverse dependencies, and external packages.
+
+### CLI Flags
+
+The binary also supports standalone CLI flags (exit before the MCP loop):
+
+| Flag | Purpose |
+|------|---------|
+| `--version` | Print version and exit |
+| `--check-enrichment [path]` | Quick staleness check (full presence + hash sampling). Used by the SessionStart hook. |
+| `--enrichment-status [path]` | Full enrichment diff with per-file blake3 hashes. Used by the `taoki-enrich` agent. |
 
 ## Caching
 

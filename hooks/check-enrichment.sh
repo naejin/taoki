@@ -19,26 +19,14 @@ if [ ! -d "$ROOT/.git" ]; then
     [ ! -d "$ROOT/.cache/taoki" ] && exit 0
 fi
 
-CACHE_DIR="$ROOT/.cache/taoki"
-CODE_MAP="$CACHE_DIR/code-map.json"
-ENRICHED="$CACHE_DIR/enriched.json"
+# Use taoki binary for definitive staleness check
+TAOKI_BIN="$(dirname "$0")/../scripts/run.sh"
+RESULT=$("$TAOKI_BIN" --check-enrichment "$ROOT" 2>/dev/null)
 
-# No code map yet — nothing to enrich
-[ ! -f "$CODE_MAP" ] && exit 0
+# If binary not available or command failed, do nothing (graceful degradation)
+[ -z "$RESULT" ] && exit 0
 
-# No enrichment cache — stale
-if [ ! -f "$ENRICHED" ]; then
-    echo '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"Code intelligence enrichment is outdated. You MUST dispatch the taoki-enrich agent and wait for it to complete before taking any action on the user'"'"'s request. Do this by using the Agent tool with the taoki-enrich agent."}}'
-    exit 0
-fi
-
-# Compare hash counts (heuristic). The pattern "hash": with literal quotes only
-# matches JSON keys — not string values, where quotes are escaped as \"hash\".
-# Uses flexible regex to handle both pretty-printed and compact JSON.
-MAP_COUNT=$(grep -Ec '"hash":[[:space:]]*"' "$CODE_MAP" 2>/dev/null || echo 0)
-ENRICHED_COUNT=$(grep -Ec '"hash":[[:space:]]*"' "$ENRICHED" 2>/dev/null || echo 0)
-
-if [ "$ENRICHED_COUNT" -lt "$MAP_COUNT" ]; then
+if echo "$RESULT" | grep -q '"stale":true'; then
     echo '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"Code intelligence enrichment is outdated. You MUST dispatch the taoki-enrich agent and wait for it to complete before taking any action on the user'"'"'s request. Do this by using the Agent tool with the taoki-enrich agent."}}'
 fi
 
