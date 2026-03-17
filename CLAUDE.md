@@ -7,7 +7,7 @@ MCP (Model Context Protocol) server that provides structural code intelligence t
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"  # Rust toolchain not in default PATH
 cargo build
-cargo test                             # 135 unit tests, all inline (#[cfg(test)])
+cargo test                             # 145 unit tests, all inline (#[cfg(test)])
 cargo clippy                           # must pass with no warnings
 ```
 
