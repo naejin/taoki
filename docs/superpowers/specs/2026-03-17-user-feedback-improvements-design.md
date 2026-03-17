@@ -12,37 +12,65 @@ User assessment: `index` is the standout tool. `dependencies` is "modestly usefu
 
 ## Goal
 
-Eliminate the overlap between `code_map` and `index` to give each tool a clear, distinct identity. Improve `dependencies` depth and symbol detail. Fix tool role confusion through hooks and clearer tool descriptions. This is a major overhaul — clean breaks over backward compatibility.
+Eliminate the overlap between tools, give each a clear identity with a distinctive name, and improve depth/symbol detail. This is a major overhaul — clean breaks over backward compatibility.
 
-**Design principle:** `code_map` is the navigator (what's where), `index` is the deep viewer (what's inside), `dependencies` is the impact analyzer (what's connected). No tool should try to do what another does.
+**Design principle — three sensing tools, each with a distinct purpose:**
+- **`radar`** (was `code_map`) — wide sweep, sees everything at a distance (repo overview)
+- **`xray`** (was `index`) — focused beam, sees inside one thing (file structure)
+- **`ripple`** (was `dependencies`) — impact trace, what's connected and how far changes spread
+
+No tool should try to do what another does.
 
 ---
 
-## 1. Tool Separation: code_map and index
+## 0. Tool Renaming
+
+All three MCP tools get new names:
+
+| Old name | New name | Rationale |
+|----------|----------|-----------|
+| `code_map` | `radar` | Wide scan — sweep the repo and get back blips (files with tags and public API) |
+| `index` | `xray` | Focused beam — see through a file to its structural bones |
+| `dependencies` | `ripple` | Impact trace — change a file, see the ripple effect through the codebase |
+
+This affects:
+- Tool names in `tool_definitions()` in `mcp.rs`
+- Dispatch in `handle_tools_call()` in `mcp.rs`
+- Function names: `call_code_map` → `call_radar`, `call_index` → `call_xray`, `call_dependencies` → `call_ripple`
+- All hook scripts and `hooks.json` (tool references)
+- `CLAUDE.md` documentation
+- Plugin skill files (`skills/taoki-map.md`, `skills/taoki-index.md`, `skills/taoki-deps.md`)
+- Cache file names: `.cache/taoki/code-map.json` → `.cache/taoki/radar.json`, new `.cache/taoki/xray.json`
+
+Internal function names (`build_code_map`, `query_deps`, etc.) can optionally be renamed for consistency, but this is lower priority than the external-facing names.
+
+---
+
+## 1. Tool Separation: radar and xray
 
 ### Current overlap
 
-`code_map` has two modes:
+`code_map` (now `radar`) has two modes:
 - Without `files`: repo overview (one line per file with public API + tags)
 - With `files`: batch skeleton mode (`build_batch_skeletons`) — essentially runs `index_source` on each file
 
-The `files` mode duplicates what `index` does, creating confusion about which to use. The user feedback explicitly flagged this: "batch skeleton mode and the index tool overlap — it's not immediately obvious when to use which."
+The `files` mode duplicates what `xray` does, creating confusion about which to use. The user feedback explicitly flagged this: "batch skeleton mode and the index tool overlap — it's not immediately obvious when to use which."
 
 ### Changes
 
-**Remove the `files` parameter from `code_map` entirely.** `code_map` becomes purely a navigator — no skeletons, no structural detail. Its job is answering "what's in this repo and where should I look?"
+**Remove the `files` parameter from `radar` entirely.** `radar` becomes purely a navigator — no skeletons, no structural detail. Its job is answering "what's in this repo and where should I look?"
 
-**Add file-based caching to `index`.** Currently `index` has only an in-memory cache (`INDEX_CACHE` thread_local in `mcp.rs`) that is lost between MCP sessions. Add persistent file-based caching so repeated calls on unchanged files are instant, even across sessions.
+**Add file-based caching to `xray`.** Currently `xray` has only an in-memory cache (`INDEX_CACHE` thread_local in `mcp.rs`) that is lost between MCP sessions. Add persistent file-based caching so repeated calls on unchanged files are instant, even across sessions.
 
-### code_map changes (src/codemap.rs)
+### radar changes (src/codemap.rs)
 
 **Deletions:**
-- Remove `build_batch_skeletons()` function entirely (lines 340-371)
+- Remove `build_batch_skeletons()` function entirely
 - Remove `detail_files` parameter from `build_code_map()` — new signature: `build_code_map(root: &Path, globs: &[String]) -> Result<String, CodeMapError>`
 - Remove `skeleton` field from `CacheEntry` struct
-- Remove the `files` parse block from `call_code_map()` in `mcp.rs`
+- Remove the `files` parse block from `call_radar()` in `mcp.rs`
 
-**Switch from `extract_all()` to `extract_public_api()`:** `code_map` currently calls `index::extract_all()` which returns `(PublicApi, skeleton)` — then discards the skeleton for overview mode but stores it in cache for batch mode. With batch mode gone, switch to `index::extract_public_api()` which returns only `(Vec<String>, Vec<String>)` (types, functions). This avoids computing skeletons (including body analysis) that code_map never uses.
+**Switch from `extract_all()` to `extract_public_api()`:** `radar` currently calls `index::extract_all()` which returns `(PublicApi, skeleton)` — then discards the skeleton for overview mode but stores it in cache for batch mode. With batch mode gone, switch to `index::extract_public_api()` which returns only `(Vec<String>, Vec<String>)` (types, functions). This avoids computing skeletons (including body analysis) that `radar` never uses.
 
 **Reset `CACHE_VERSION` to 1.** This is a major overhaul — start fresh rather than incrementing from the old version scheme. Old caches are simply discarded.
 
@@ -66,27 +94,27 @@ pub fn build_code_map(root: &Path, globs: &[String]) -> Result<String, CodeMapEr
 }
 ```
 
-### index caching changes (src/mcp.rs)
+### xray caching changes (src/mcp.rs)
 
-**New file-based cache** at `.cache/taoki/index.json`:
+**New file-based cache** at `.cache/taoki/xray.json`:
 ```rust
-const INDEX_CACHE_VERSION: u32 = 1;
-const INDEX_DISK_CACHE_FILE: &str = "index.json";
+const XRAY_CACHE_VERSION: u32 = 1;
+const XRAY_DISK_CACHE_FILE: &str = "xray.json";
 
 #[derive(Debug, Serialize, Deserialize)]
-struct IndexDiskCache {
+struct XrayCiskCache {
     version: u32,
-    files: HashMap<String, IndexDiskEntry>,
+    files: HashMap<String, XrayDiskEntry>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct IndexDiskEntry {
+struct XrayDiskEntry {
     hash: String,
     skeleton: String,
 }
 ```
 
-Cache keys are **relative paths** (relative to repo root), matching code_map's cache key convention. This requires finding the repo root from the file path.
+Cache keys are **relative paths** (relative to repo root), matching `radar`'s cache key convention. This requires finding the repo root from the file path.
 
 **Repo root discovery** — new helper in `mcp.rs`:
 ```rust
@@ -103,31 +131,31 @@ fn find_repo_root(file_path: &Path) -> Option<PathBuf> {
 }
 ```
 
-**Updated `call_index` flow:**
+**Updated `call_xray` flow:**
 1. Read the file into memory, compute blake3 hash (same as current)
 2. Check in-memory cache (`INDEX_CACHE` thread_local) → return if hash matches
 3. Find repo root via `find_repo_root()`. If found, check file-based cache → return if hash matches, also populate in-memory cache
 4. Cache miss → parse with `index_source()`, write to both in-memory and file-based caches
 5. If repo root not found (file outside a git repo), skip file-based caching, use in-memory only
 
-**File locking:** Same pattern as code_map's cache — use `fs2::FileExt` for shared lock on read, exclusive lock on write. Load/save helpers follow the `load_cache`/`save_cache` pattern in codemap.rs (atomic write via temp file + rename).
+**File locking:** Same pattern as `radar`'s cache — use `fs2::FileExt` for shared lock on read, exclusive lock on write. Load/save helpers follow the `load_cache`/`save_cache` pattern in codemap.rs (atomic write via temp file + rename).
 
 **The existing in-memory cache stays.** It's a hot-path optimization that avoids JSON deserialization on repeated calls within the same session. The file-based cache provides persistence across sessions.
 
 ### MCP tool definition changes (src/mcp.rs)
 
-**code_map tool:**
+**radar tool** (was `code_map`):
+- Name: `"radar"`
 - Remove `files` property from `inputSchema`
-- Update description: remove all mention of batch skeleton mode
-- New description: `"Build a structural map of the codebase — one line per file with public types, function names, and heuristic tags. Use this first to orient in an unfamiliar repo or find which files are relevant. Results are cached (blake3) so repeated calls are near-instant. Supports globs to narrow scope."`
+- New description: `"Sweep the codebase — one line per file with public types, function names, and heuristic tags. Use this first to orient in an unfamiliar repo or find which files are relevant. Results are cached (blake3) so repeated calls are near-instant. Supports globs to narrow scope."`
 
-**index tool:**
-- Update description: remove "For multiple files at once, use code_map with the files parameter"
-- New description: `"Return a compact structural skeleton of a source file: imports, type definitions, function signatures with body insights, and line numbers. ~70-90% fewer tokens than reading the full file. Results are cached so repeated calls on unchanged files are instant. Use this to understand a file's architecture before reading specific sections with the Read tool. Supports: Rust, Python, TypeScript, JavaScript, Go, Java."`
+**xray tool** (was `index`):
+- Name: `"xray"`
+- New description: `"See through a source file to its structural bones: imports, type definitions, function signatures with body insights, and line numbers. ~70-90% fewer tokens than reading the full file. Results are cached so repeated calls on unchanged files are instant. Use this to understand a file's architecture before reading specific sections with the Read tool. Supports: Rust, Python, TypeScript, JavaScript, Go, Java."`
 
 ### Testing
 
-**code_map — tests to delete** (batch skeleton tests, now obsolete):
+**radar — tests to delete** (batch skeleton tests, now obsolete):
 1. `code_map_with_files_returns_skeleton_only`
 2. `code_map_files_normalizes_dot_slash_prefix`
 3. `code_map_files_ignores_nonexistent`
@@ -139,23 +167,23 @@ fn find_repo_root(file_path: &Path) -> Option<PathBuf> {
 
 All remaining tests calling `build_code_map(root, &[], &[])` must have the third argument removed.
 
-**code_map — new/updated tests:**
+**radar — new/updated tests:**
 - Verify `extract_public_api` returns the same types/functions as `extract_all().0` (add a cross-check test)
 - Verify old caches are discarded (test loads a stale cache, confirms it's rebuilt)
 
 **Callers outside codemap.rs:** `benches/speed.rs` calls `build_code_map(dir.path(), &[], &[])` at 3 call sites — must remove the third argument.
 
-**index caching:**
-- Unit test: call `call_index` twice on the same file → second call returns cached result without re-parsing
+**xray caching:**
+- Unit test: call `call_xray` twice on the same file → second call returns cached result without re-parsing
 - Unit test: modify file between calls → cache miss, re-parse
 - Unit test: file outside git repo → works without file-based cache (in-memory only)
 - Unit test: corrupt/missing cache file → graceful fallback to parse
 
 ---
 
-## 2. Code Map: Output Size Scaling
+## 2. Radar: Output Size Scaling
 
-Two complementary changes to code_map's output formatting, no new parameters.
+Two complementary changes to `radar`'s output formatting, no new parameters.
 
 ### A) Directory grouping for large repos
 
@@ -173,7 +201,7 @@ src/db/ (5 files, 1,600 lines)
 
 Key differences from current flat output:
 - **Directory headers** with aggregate file count and line count for orientation
-- **Name-only API** — function/type names without signatures. `fetch_user(user_id: str) -> User` becomes `fetch_user`. Full signatures available via `index`.
+- **Name-only API** — function/type names without signatures. `fetch_user(user_id: str) -> User` becomes `fetch_user`. Full signatures available via `xray`.
 - Files within each directory still sorted alphabetically
 - Files at repo root (no directory prefix) grouped under a `(root)` header or listed first without a header
 
@@ -183,7 +211,7 @@ For result sets under `GROUPING_THRESHOLD`, flat list with full signatures. If g
 
 Named constants control truncation: `FN_TRUNCATE_THRESHOLD` (8, show first 6) and `TYPE_TRUNCATE_THRESHOLD` (12, show first 10). When a file exceeds the threshold, the output shows `threshold - 2` items then `... +N more`.
 
-This caps the worst-case per-file output. When truncated, append a cue: `... +9 more (use index for full list)`. This nudges agents toward the intended workflow.
+This caps the worst-case per-file output. When truncated, append a cue: `... +9 more (use xray for full list)`. This nudges agents toward the intended workflow.
 
 ### Implementation
 
@@ -204,11 +232,11 @@ Changes to `src/codemap.rs`:
 
 ---
 
-## 3. Dependencies: Depth + Symbols
+## 3. Ripple: Depth + Symbols
 
 ### New parameter
 
-Add `depth` (integer, optional, default 1, max 3) to the `dependencies` MCP tool.
+Add `depth` (integer, optional, default 1, max 3) to the `ripple` MCP tool.
 
 ### Behavior
 
@@ -245,6 +273,13 @@ external:
 
 Rust and Go extraction currently push empty symbol vecs (Go's import model is package-level, not symbol-level) — no change needed, those entries just show the file path with no parenthetical.
 
+### MCP tool definition
+
+**ripple tool** (was `dependencies`):
+- Name: `"ripple"`
+- New description: `"Trace the ripple effect of changing a file. Shows what it imports (depends_on), what imports it (used_by) with depth control, and external dependencies. Symbols are shown where available. Use depth=2 or depth=3 to see the full blast radius before modifying a file."`
+- Add `depth` to `inputSchema` (optional integer, default 1, min 1, max 3)
+
 ### Implementation
 
 Changes to `src/deps.rs`:
@@ -254,9 +289,8 @@ Changes to `src/deps.rs`:
 - For `used_by` symbol sourcing: when file B appears under file A, look up B's `FileImports` and find the `ImportInfo` where `path == A` to get the symbols B imports from A
 
 Changes to `src/mcp.rs`:
-- Add `depth` to `dependencies` tool definition (optional integer, default 1, min 1, max 3)
-- Parse and pass `depth` to `query_deps`
-- Update `dependencies` tool description to mention `depth` parameter. The existing description already claims "specific symbols used" — symbol rendering now fulfills that claim, no description change needed for symbols.
+- Rename dispatch: `"ripple"` → `call_ripple`
+- Parse `depth` from arguments and pass to `query_deps`
 
 ### Testing
 
@@ -275,73 +309,65 @@ Unit tests with synthetic `DepsGraph`:
 All hooks are text-only changes to shell scripts and `hooks.json`. No Rust changes.
 
 **Files to modify** (5 total):
-- `hooks/hooks.json` — SessionStart inline message (contains stale `files: [...]` reference)
-- `hooks/check-read.sh` — PreToolUse Read (contains stale `files: [...]` reference)
-- `hooks/check-agent.sh` — PreToolUse Agent (contains stale `files: [...]` reference)
+- `hooks/hooks.json` — SessionStart inline message
+- `hooks/check-read.sh` — PreToolUse Read
+- `hooks/check-agent.sh` — PreToolUse Agent
 - `hooks/check-glob.sh` — PreToolUse Glob
 - `hooks/check-grep.sh` — PreToolUse Grep
 
 ### SessionStart
 
-Replace the current wall-of-text with a decision tree. Updated to reflect the clear tool separation (no more batch skeletons):
+Replace with a decision tree using the new tool names:
 
 ```
 Structural code intelligence available (taoki plugin):
-- Exploring a new codebase? → code_map (no args) for tagged repo overview
-- Understanding a specific file? → index (structural skeleton with line numbers, 70-90% fewer tokens than reading)
-- About to modify a file? → dependencies (what depends on it, with depth for blast radius)
-Always call code_map first when orienting in an unfamiliar repo, then index on files of interest.
+- Exploring a new codebase? → radar (no args) for tagged repo overview
+- Understanding a specific file? → xray (structural skeleton with line numbers, 70-90% fewer tokens than reading)
+- About to modify a file? → ripple (what depends on it, with depth for blast radius)
+Always call radar first when orienting in an unfamiliar repo, then xray on files of interest.
 ```
 
 ### PreToolUse Read
 
-Add dependencies nudge alongside existing index suggestion:
-
 ```
-Consider calling mcp__taoki__index on this file first to get its structure
+Consider calling mcp__taoki__xray on this file first to get its structure
 with line numbers, then Read only the sections you need. If you're about to
-modify this file, mcp__taoki__dependencies shows what depends on it.
+modify this file, mcp__taoki__ripple shows what depends on it.
 ```
 
 ### PreToolUse Glob
 
-Clarify when code_map beats Glob (structural exploration, not specific file lookup):
-
 ```
 If you're exploring project structure (not searching for a specific file),
-mcp__taoki__code_map gives a tagged overview with public APIs — one call
+mcp__taoki__radar gives a tagged overview with public APIs — one call
 instead of glob + multiple reads.
 ```
 
 ### PreToolUse Grep
 
-Acknowledge that Grep is sometimes the right tool:
-
 ```
 For structural questions (what functions does this file export? what's the
-class hierarchy?), mcp__taoki__index or code_map are more precise than
+class hierarchy?), mcp__taoki__xray or radar are more precise than
 text search. For literal string lookups, Grep is the right tool.
 ```
 
 ### PreToolUse Agent
 
-Update to remove the `files: [...]` reference (batch mode is gone). New subagent prompt text:
-
 ```
 This subagent has access to Taoki MCP tools for code intelligence.
-mcp__taoki__code_map (repo overview with tags), mcp__taoki__index
-(single file skeleton), mcp__taoki__dependencies (import/export graph).
-Call code_map first when exploring a codebase, then index on files of interest.
+mcp__taoki__radar (repo overview with tags), mcp__taoki__xray
+(single file skeleton), mcp__taoki__ripple (import/export graph with depth).
+Call radar first when exploring a codebase, then xray on files of interest.
 ```
 
 ---
 
 ## Cache Impact
 
-| Cache | Change | Version bump? |
-|-------|--------|---------------|
-| `.cache/taoki/code-map.json` | Remove `skeleton` field from `CacheEntry`, reset version to 1 | Yes — fresh start |
-| `.cache/taoki/index.json` | **New** — file-based cache for index skeletons | New file, starts at v1 |
+| Cache | Change | Version? |
+|-------|--------|----------|
+| `.cache/taoki/radar.json` (was `code-map.json`) | Remove `skeleton` field, reset version to 1, rename file | Fresh start |
+| `.cache/taoki/xray.json` (was in-memory only) | **New** — file-based cache for xray skeletons | New file, v1 |
 | `.cache/taoki/deps.json` | No structural change — depth is query-time BFS, symbols already stored | No |
 
 Old caches are discarded on first call after upgrade — clean slate.
@@ -352,26 +378,29 @@ Old caches are discarded on first call after upgrade — clean slate.
 
 | Area | Files | Change Size | Risk |
 |------|-------|-------------|------|
-| `codemap.rs` — remove batch skeletons, remove skeleton from cache, drop `#[serde(default)]` annotations, switch to `extract_public_api`, directory grouping, truncation, delete 8 tests, update remaining test signatures | 1 | ~200 lines changed + tests | Medium — output format change |
-| `mcp.rs` — remove `files` parsing, add index disk cache, add `find_repo_root`, add `depth` parsing for deps | 1 | ~130 lines + tests | Low — additive caching, existing in-memory cache preserved |
-| `deps.rs` — depth BFS + symbol rendering in `query_deps`, baseline test | 1 | ~100 lines + tests | Low — additive, default=1 preserves behavior |
-| `benches/speed.rs` — remove third arg from `build_code_map` calls | 1 | ~3 lines | None — signature alignment |
+| `codemap.rs` — remove batch skeletons, remove skeleton from cache, drop `#[serde(default)]`, switch to `extract_public_api`, directory grouping, truncation, delete 8 tests, update remaining test signatures | 1 | ~200 lines changed + tests | Medium — output format change |
+| `mcp.rs` — rename tools, rename dispatch functions, add xray disk cache, add `find_repo_root`, add `depth` parsing for ripple, remove `files` parsing | 1 | ~150 lines + tests | Medium — rename + caching |
+| `deps.rs` — depth BFS + symbol rendering in `query_deps` | 1 | ~100 lines + tests | Low |
+| `benches/speed.rs` — remove third arg from `build_code_map` calls | 1 | ~3 lines | None |
 | Hook scripts + hooks.json | 5 files | ~25 lines total | None — text only |
+| Plugin skills — update tool names in skill files | 3 files | ~10 lines | None — text only |
 | `CLAUDE.md` | 1 | Documentation updates | None |
 
-Total: ~430-450 lines of Rust changes, ~25 lines of shell.
+Total: ~450-500 lines of Rust changes, ~35 lines of shell/markdown.
 
 ## Post-Implementation
 
 Update `CLAUDE.md` to reflect:
-- `code_map` no longer has `files` parameter — tool separation with `index`
-- `code_map` output format: directory grouping for >100 files, `GROUPING_THRESHOLD` constant
+- Tool renames: `code_map` → `radar`, `index` → `xray`, `dependencies` → `ripple`
+- `radar` no longer has `files` parameter — tool separation with `xray`
+- `radar` output format: directory grouping for >100 files, `GROUPING_THRESHOLD` constant
 - `FN_TRUNCATE_THRESHOLD` and `TYPE_TRUNCATE_THRESHOLD` constants
-- `code_map` now uses `extract_public_api()` instead of `extract_all()`
+- `radar` now uses `extract_public_api()` instead of `extract_all()`
 - `CacheEntry` no longer has `skeleton` field, `CACHE_VERSION` reset to 1
-- New index file-based cache at `.cache/taoki/index.json` with `INDEX_CACHE_VERSION`
+- Cache files renamed: `radar.json`, new `xray.json`
+- New xray file-based cache with `XRAY_CACHE_VERSION`
 - `find_repo_root()` helper in `mcp.rs`
 - New `query_deps` signature with `depth` parameter
-- Updated hook descriptions
+- `ripple` tool description and depth parameter
+- Updated hook descriptions with new tool names
 - Updated tool descriptions for all three tools
-
