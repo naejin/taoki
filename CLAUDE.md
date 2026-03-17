@@ -7,9 +7,18 @@ MCP (Model Context Protocol) server that provides structural code intelligence t
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"  # Rust toolchain not in default PATH
 cargo build
-cargo test                             # 127 unit tests, all inline (#[cfg(test)])
+cargo test                             # 135 unit tests, all inline (#[cfg(test)])
 cargo clippy                           # must pass with no warnings
 ```
+
+### Benchmark
+
+```bash
+cargo run --bin benchmark --features benchmark           # run against 15 pinned repos
+cargo run --bin benchmark --features benchmark -- --update-pins  # refresh pinned SHAs
+```
+
+Feature-gated binary (`tools/benchmark.rs`) that validates taoki against 15 real open-source projects. Not included in release artifacts — development tool only. Repos are pinned in `tools/repos.json`; results are injected into `README.md` between `BENCH:START`/`BENCH:END` markers. 17 benchmark-specific tests run only with `--features benchmark`.
 
 There are no integration tests or test fixtures — tests use `tempfile` crate to create temporary directories with inline source code.
 
@@ -18,7 +27,7 @@ There are no integration tests or test fixtures — tests use `tempfile` crate t
 Five modules under `src/`:
 
 - **`main.rs`** — MCP stdio transport. Auto-detects framing (Content-Length headers vs bare JSONL). Reads requests, dispatches to `mcp::handle_request`, writes responses. Supports `--version` flag (prints version from `Cargo.toml` and exits before MCP loop).
-- **`mcp.rs`** — JSON-RPC dispatch. Routes `initialize`, `ping`, `tools/list`, `tools/call`. Tool calls dispatch to `call_index`, `call_code_map`, and `call_dependencies`. Also handles filename-based test file detection (collapses entire test files in `index` output).
+- **`mcp.rs`** — JSON-RPC dispatch. Routes `initialize`, `ping`, `tools/list`, `tools/call`. Tool calls dispatch to `call_index`, `call_code_map`, and `call_dependencies`. Also handles filename-based test file detection (collapses entire test files in `index` output). `is_test_filename()` checks both filename conventions and well-known test data directory paths (`testdata/`, `tests/data/`, `tests/fixtures/`, `__fixtures__/`, `src/test/resources/`).
 - **`codemap.rs`** — `build_code_map()` walks a repo (respecting .gitignore), hashes files with blake3, caches results in `.cache/taoki/code-map.json` with file-level locking (fs2). Calls `index::extract_all` for each file to get both public API and structural skeleton in a single parse pass. Computes heuristic tags per file (`[entry-point]`, `[tests]`, `[error-types]`, `[module-root]`, etc.). Supports optional `files` parameter to include full skeletons inline for specific files. Also triggers dependency graph building via `deps.rs`.
 - **`deps.rs`** — Cross-file dependency graph. Extracts imports from source files using tree-sitter, resolves them to actual files in the repo (best-effort, language-specific), and builds a cached graph. Workspace-aware Rust resolution: `build_crate_map()` scans Cargo.toml files to map crate names to directories; `crate::` imports resolve within each workspace crate, cross-crate imports (`crate_name::path`) resolve via the crate map. `query_deps()` deduplicates depends_on entries. Provides `query_deps()` to show depends_on/used_by/external for any file. Cache stored at `.cache/taoki/deps.json`.
 - **`index/`** — `index_file()` and `index_source()` use tree-sitter to parse source files and extract structural skeletons (imports, types, functions, impls, modules). `extract_all()` returns both the public API and skeleton in a single parse pass (used by `codemap.rs`). Language-specific extractors live in `index/languages/` — one file per language. TypeScript and JavaScript share `typescript.rs`. Each extractor implements `is_test_node()` to detect and collapse test code. The `index` tool outputs sections: `imports:`, `consts:`, `exprs:` (top-level expressions for Python/TypeScript), `types:`, `traits:`, `impls:`, `fns:`, `classes:`, `mod:`, `macros:`, and `tests:`. The first line of doc comments is extracted and rendered as `/// summary` between the entry header and its children, giving agents intent/contract information without reading source. Doc extraction uses `strip_doc_prefix()` and `extract_doc_line()` on the `LanguageExtractor` trait with a default sibling-walk implementation; Python overrides entirely (docstrings are body children, not siblings); Go adds an adjacency check (its `is_doc_comment` matches all comments, not just doc-specific syntax like `///` or `/**`). Doc lines are truncated at 120 chars. Functions and methods include body insights: `→ calls:` (free/scoped calls — domain orchestration), `→ methods:` (method calls with receiver context, e.g. `client.get`), `→ match:` (match/switch arms), and `→ errors:` (error returns and `?` count).
@@ -34,6 +43,7 @@ Rust (.rs), Python (.py, .pyi), TypeScript (.ts, .tsx), JavaScript (.js, .jsx, .
 - Error types use `thiserror` derive macros.
 - Cache is stored at `<repo>/.cache/taoki/` (gitignored): `code-map.json` (v6, with tags, skeletons, docstrings, and split calls/methods), `deps.json` (v2, with workspace-aware resolution).
 - Files over 2MB are skipped (`MAX_FILE_SIZE` in `index/mod.rs`).
+- Minified/bundled files are detected by `is_minified()` in `index/mod.rs` (average line length > 500 chars) and tagged `[minified]` in `code_map`.
 - Struct fields are truncated after 8 fields (`FIELD_TRUNCATE_THRESHOLD`).
 - Body insights have per-category limits: 12 calls (`MAX_CALLS`), 8 methods (`MAX_METHODS`), 10 match arms (`MAX_MATCH_ARMS`), 8 error returns (`MAX_ERRORS`). Call names truncated at 40 chars, match targets at 30, arms at 30, errors at 40.
 - **No name-based heuristics — AST structure and language stdlib only.** This is a deliberate design principle: Taoki must work universally across all projects and languages.
