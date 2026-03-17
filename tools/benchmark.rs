@@ -333,7 +333,57 @@ fn print_results(results: &[ProjectResult]) {
 }
 
 fn main() {
-    println!("benchmark stub");
+    let args: Vec<String> = env::args().collect();
+
+    if args.iter().any(|a| a == "--update-pins") {
+        update_pins(REPOS_JSON);
+        return;
+    }
+
+    let data = fs::read_to_string(REPOS_JSON).expect("failed to read repos.json");
+    let repos: Vec<RepoEntry> = serde_json::from_str(&data).expect("failed to parse repos.json");
+
+    let validation_errors = validate_repos(&repos);
+    if !validation_errors.is_empty() {
+        eprintln!("repos.json validation errors:");
+        for e in &validation_errors {
+            eprintln!("  - {}", e);
+        }
+        process::exit(1);
+    }
+
+    let placeholder_repos: Vec<_> = repos
+        .iter()
+        .filter(|r| r.sha.starts_with('<') || r.sha.is_empty())
+        .collect();
+    if !placeholder_repos.is_empty() {
+        eprintln!("repos.json has placeholder SHAs. Run with --update-pins first:");
+        for r in &placeholder_repos {
+            eprintln!("  - {} (sha: {})", r.name, r.sha);
+        }
+        process::exit(1);
+    }
+
+    fs::create_dir_all(CACHE_DIR).expect("failed to create cache dir");
+
+    let mut results = Vec::new();
+    for repo in &repos {
+        println!("\n>>> Benchmarking: {} ({})", repo.name, repo.lang);
+        results.push(run_project(repo));
+    }
+
+    print_results(&results);
+
+    let table = format_table(&results);
+    match inject_readme(README_PATH, &table) {
+        Ok(()) => println!("\nREADME.md updated."),
+        Err(e) => eprintln!("\nWARNING: {}", e),
+    }
+
+    let all_pass = results.iter().all(|r| r.passed());
+    if !all_pass {
+        process::exit(1);
+    }
 }
 
 #[cfg(test)]
