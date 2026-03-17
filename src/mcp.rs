@@ -81,22 +81,22 @@ pub fn tool_definitions() -> Value {
     serde_json::json!({
         "tools": [
             {
-                "name": "index",
-                "description": "Return a compact structural skeleton of a source file: imports, type definitions, function signatures, and their line numbers. ~70-90% fewer tokens than reading the full file. Use this to understand a file's architecture before reading specific sections with the Read tool. For multiple files at once, use code_map with the files parameter. Supports: Rust, Python, TypeScript, JavaScript, Go, Java.",
+                "name": "xray",
+                "description": "Return a compact structural skeleton of a source file: imports, type definitions, function signatures, and their line numbers. ~70-90% fewer tokens than reading the full file. Use this to understand a file's architecture before reading specific sections with the Read tool. Results are cached on disk (blake3) so repeated calls on unchanged files are instant. Supports: Rust, Python, TypeScript, JavaScript, Go, Java.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "Absolute path to the source file to index"
+                            "description": "Absolute path to the source file to xray"
                         }
                     },
                     "required": ["path"]
                 }
             },
             {
-                "name": "code_map",
-                "description": "Two modes depending on whether `files` is provided. WITHOUT files: build a structural map of the codebase — one line per file with public types, function signatures, and heuristic tags. Use this first to orient in an unfamiliar repo or find which files are relevant. Results are cached (blake3) so repeated calls are near-instant. Supports globs to narrow scope. WITH files: batch skeleton mode — returns full structural skeletons for the listed files only, no overview. Equivalent to calling index on each file in one round trip. Use this when you already know which files you need.",
+                "name": "radar",
+                "description": "Sweep a repository and build a structural map — one line per file with public types, function signatures, and heuristic tags like [entry-point], [tests], [error-types]. Use this first to orient in an unfamiliar repo or find which files are relevant. Results are cached (blake3) so repeated calls are near-instant. Supports globs to narrow scope.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -108,19 +108,14 @@ pub fn tool_definitions() -> Value {
                             "type": "array",
                             "items": { "type": "string" },
                             "description": "Optional glob patterns to filter files (e.g. [\"src/**/*.rs\"]). Defaults to all supported file types."
-                        },
-                        "files": {
-                            "type": "array",
-                            "items": { "type": "string" },
-                            "description": "List of relative file paths to return skeletons for. When provided, switches to batch skeleton mode: returns only the skeletons for these files with no repo overview."
                         }
                     },
                     "required": ["path"]
                 }
             },
             {
-                "name": "dependencies",
-                "description": "Show what a file imports and what imports it. Returns dependency and dependent files with the specific symbols used. Automatically builds the dependency graph if not cached. Use this to understand impact before modifying a file.",
+                "name": "ripple",
+                "description": "Trace the ripple effect of a file: what it imports, what imports it, and external dependencies. Use depth to expand the blast radius — see not just direct dependents but what depends on those. Automatically builds the dependency graph if not cached.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -131,6 +126,13 @@ pub fn tool_definitions() -> Value {
                         "repo_root": {
                             "type": "string",
                             "description": "Absolute path to the repository root"
+                        },
+                        "depth": {
+                            "type": "integer",
+                            "description": "How many levels of used_by to expand (1-3, default 1). Higher values show more of the blast radius.",
+                            "default": 1,
+                            "minimum": 1,
+                            "maximum": 3
                         }
                     },
                     "required": ["file", "repo_root"]
@@ -182,9 +184,9 @@ fn handle_tools_call(req: &JsonRpcRequest) -> JsonRpcResponse {
     let arguments = req.params.get("arguments").cloned().unwrap_or_default();
 
     let result = match tool_name {
-        "index" => call_index(&arguments),
-        "code_map" => call_code_map(&arguments),
-        "dependencies" => call_dependencies(&arguments),
+        "xray" => call_xray(&arguments),
+        "radar" => call_radar(&arguments),
+        "ripple" => call_ripple(&arguments),
         _ => ToolResult {
             content: vec![ToolContent {
                 r#type: "text".to_string(),
@@ -197,7 +199,7 @@ fn handle_tools_call(req: &JsonRpcRequest) -> JsonRpcResponse {
     JsonRpcResponse::success(req.id.clone(), serde_json::to_value(result).unwrap())
 }
 
-fn call_index(args: &Value) -> ToolResult {
+fn call_xray(args: &Value) -> ToolResult {
     let path_str = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
     if path_str.is_empty() {
         return ToolResult {
@@ -370,7 +372,7 @@ fn is_test_data_path(path: &std::path::Path) -> bool {
     PATTERNS.iter().any(|p| s.contains(p))
 }
 
-fn call_code_map(args: &Value) -> ToolResult {
+fn call_radar(args: &Value) -> ToolResult {
     let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
     if path.is_empty() {
         return ToolResult {
@@ -392,17 +394,7 @@ fn call_code_map(args: &Value) -> ToolResult {
         })
         .unwrap_or_default();
 
-    let detail_files: Vec<String> = args
-        .get("files")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    match codemap::build_code_map(std::path::Path::new(path), &globs, &detail_files) {
+    match codemap::build_code_map(std::path::Path::new(path), &globs) {
         Ok(map) => ToolResult {
             content: vec![ToolContent {
                 r#type: "text".to_string(),
@@ -420,9 +412,10 @@ fn call_code_map(args: &Value) -> ToolResult {
     }
 }
 
-fn call_dependencies(args: &Value) -> ToolResult {
+fn call_ripple(args: &Value) -> ToolResult {
     let file_str = args.get("file").and_then(|v| v.as_str()).unwrap_or("");
     let root_str = args.get("repo_root").and_then(|v| v.as_str()).unwrap_or("");
+    let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(1).min(3).max(1) as u32;
 
     if file_str.is_empty() || root_str.is_empty() {
         return ToolResult {
@@ -466,7 +459,7 @@ fn call_dependencies(args: &Value) -> ToolResult {
         }
     };
 
-    let output = crate::deps::query_deps(&graph, &rel);
+    let output = crate::deps::query_deps(&graph, &rel, depth);
 
     ToolResult {
         content: vec![ToolContent {
@@ -494,7 +487,7 @@ mod tests {
             "file": src.join("main.rs").to_str().unwrap(),
             "repo_root": dir.path().to_str().unwrap(),
         });
-        let result = call_dependencies(&args);
+        let result = call_ripple(&args);
         assert!(!result.is_error, "should not error: {:?}", result.content);
         let text = &result.content[0].text;
         assert!(text.contains("depends_on:") || text.contains("external:"),
@@ -508,7 +501,7 @@ mod tests {
         fs::write(&test_file, "def test_login():\n    assert True\n\ndef test_logout():\n    pass\n").unwrap();
 
         let args = serde_json::json!({ "path": test_file.to_str().unwrap() });
-        let result = call_index(&args);
+        let result = call_xray(&args);
         assert!(!result.is_error);
         let text = &result.content[0].text;
         assert!(text.contains("tests:"), "should collapse entire file as tests:\n{text}");
@@ -522,6 +515,14 @@ mod tests {
         assert!(is_test_filename(std::path::Path::new("project/test/fixtures/sample.ts")));
         assert!(is_test_filename(std::path::Path::new("project/__fixtures__/mock.js")));
         assert!(is_test_filename(std::path::Path::new("project/src/test/resources/Config.java")));
+    }
+
+    #[test]
+    fn tool_definitions_use_new_names() {
+        let defs = tool_definitions();
+        let tools = defs["tools"].as_array().unwrap();
+        let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert_eq!(names, vec!["xray", "radar", "ripple"]);
     }
 
     #[test]

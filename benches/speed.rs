@@ -45,12 +45,12 @@ fn bench_code_map(c: &mut Criterion) {
     group.bench_function("cold", |b| {
         b.iter(|| {
             let _ = std::fs::remove_dir_all(dir.path().join(".cache"));
-            taoki::codemap::build_code_map(dir.path(), &[], &[])
+            taoki::codemap::build_code_map(dir.path(), &[])
         })
     });
-    let _ = taoki::codemap::build_code_map(dir.path(), &[], &[]);
+    let _ = taoki::codemap::build_code_map(dir.path(), &[]);
     group.bench_function("cached", |b| {
-        b.iter(|| taoki::codemap::build_code_map(dir.path(), &[], &[]))
+        b.iter(|| taoki::codemap::build_code_map(dir.path(), &[]))
     });
     group.finish();
 }
