@@ -25,7 +25,7 @@ pub struct DepsGraph {
     pub graph: HashMap<String, FileImports>,
 }
 
-pub const DEPS_VERSION: u32 = 1;
+pub const DEPS_VERSION: u32 = 2;
 const DEPS_FILE: &str = "deps.json";
 const DEPS_DIR: &str = ".cache/taoki";
 

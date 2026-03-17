@@ -39,7 +39,8 @@ types:
 fns:
   read_message(reader: &mut impl BufRead) -> ... [11-37]
     /// Read a single JSON-RPC message from stdin.
-    → calls: read_content_length_message, read_line, trim
+    → calls: read_content_length_message, read_line
+    → methods: trim
     → match: framing → Framing::ContentLength, Framing::Jsonl
   main() [86-135]
     → calls: handle_request, read_message, write_message
@@ -67,7 +68,7 @@ external:
 - **70–90% fewer tokens** — Claude reads structure, not source, then targets specific line ranges
 - **Heuristic tags** — files auto-tagged as `[entry-point]`, `[tests]`, `[error-types]`, `[data-models]`, `[module-root]`, and more
 - **Docstring extraction** — first line of doc comments (`///`, `/** */`, Python docstrings) shown inline as `/// summary`
-- **Body insights** — functions show call graphs (`→ calls:`), match/switch arms (`→ match:`), and error sites (`→ errors:`). Calls are priority-ordered: free/scoped calls (domain logic) appear before method calls (plumbing), so the signal is always visible first
+- **Body insights** — functions show `→ calls:` (free/scoped), `→ methods:` (with receiver context like `client.get`), `→ match:` (switch arms), and `→ errors:` (error sites). Calls and methods are separated: domain orchestration vs plumbing, so the signal is always visible first
 - **Test collapsing** — test code detected and collapsed across all supported languages
 - **Fast caching** — blake3 content hashing with file-level locking; repeated calls are near-instant
 - **Tree-sitter parsing** — accurate, fast, no regex heuristics
@@ -169,6 +170,17 @@ curl -fsSL https://raw.githubusercontent.com/naejin/taoki/master/scripts/uninsta
 ```
 
 Or manually: `rm -rf ~/.claude/plugins/taoki`
+
+## Changelog
+
+### v0.9.2
+
+- **Test range fix** — test section ranges now include the last test's end line, not just start lines
+- **Java enum methods** — enum bodies with methods, fields, and constructors are fully extracted
+- **`pub(crate)` visibility** — `pub(crate)` and `pub(super)` items now appear in `code_map` visible API
+- **Split calls/methods** — body insights separate `→ calls:` (free/scoped) from `→ methods:` (method calls) for clearer signal
+- **Receiver context** — method calls include one level of receiver context (e.g. `self.client.get()` → `client.get`)
+- **Workspace-aware deps** — Rust dependency resolution now handles Cargo workspaces and cross-crate imports
 
 ## License
 
