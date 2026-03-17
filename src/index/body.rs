@@ -438,14 +438,14 @@ fn extract_error_returns(body: Node, source: &[u8], lang: Language) -> (Vec<Stri
                         }
                     }
                 }
-                // Macro invocations: bail!, anyhow!, panic!, todo!, unimplemented!
-                // Also handles namespaced variants like anyhow::bail!
+                // Macro invocations: panic!, todo!, unimplemented! (stdlib only)
+                // Also handles namespaced variants like std::panic!
                 if node.kind() == "macro_invocation" {
                     if let Some(mac) = node.child(0) {
                         let full_name = node_text(mac, source);
-                        // Extract the leaf name for matching (e.g. "anyhow::bail" -> "bail")
+                        // Extract the leaf name for matching (e.g. "std::panic" -> "panic")
                         let leaf = full_name.rsplit("::").next().unwrap_or(full_name);
-                        if matches!(leaf, "bail" | "anyhow" | "panic" | "todo" | "unimplemented") {
+                        if matches!(leaf, "panic" | "todo" | "unimplemented") {
                             let text = format!("{full_name}!");
                             if seen.insert(text.clone()) {
                                 errors.push(text);
@@ -891,7 +891,7 @@ fn example() -> Result<(), MyError> {
     if bad {
         return Err(MyError::NotFound);
     }
-    bail!("oh no");
+    panic!("oh no");
     Ok(())
 }
 "#;
@@ -901,7 +901,8 @@ fn example() -> Result<(), MyError> {
         let body = fn_node.child_by_field_name("body").unwrap();
         let (errors, try_count) = extract_error_returns(body, &bytes, Language::Rust);
         assert_eq!(try_count, 2);
-        assert_eq!(errors, vec!["MyError::NotFound", "bail!"]);
+        // Only stdlib: Err() calls and panic!/todo!/unimplemented! macros
+        assert_eq!(errors, vec!["MyError::NotFound", "panic!"]);
     }
 
     #[test]
@@ -1237,13 +1238,14 @@ class Example {
         assert_eq!(m.arms, vec!["1", "2", "default"]);
     }
 
-    // --- Rust namespaced macro test ---
+    // --- Rust namespaced macro test (stdlib only) ---
 
     #[test]
-    fn test_extract_errors_rust_namespaced_macros() {
+    fn test_extract_errors_rust_stdlib_macros_only() {
         let src = r#"
 fn example() -> Result<()> {
     anyhow::bail!("something went wrong");
+    std::panic!("fatal");
     tracing::error!("not an error return");
     Ok(())
 }
@@ -1253,7 +1255,8 @@ fn example() -> Result<()> {
         let fn_node = root.child(0).unwrap();
         let body = fn_node.child_by_field_name("body").unwrap();
         let (errors, _) = extract_error_returns(body, &bytes, Language::Rust);
-        assert_eq!(errors, vec!["anyhow::bail!"]);
+        // Only stdlib macros detected — anyhow::bail! is library-specific, not matched
+        assert_eq!(errors, vec!["std::panic!"]);
     }
 
     // --- No name-based filtering: purely structural ---
