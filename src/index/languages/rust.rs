@@ -280,14 +280,14 @@ impl LanguageExtractor for RustExtractor {
         for child in root.children(&mut cursor) {
             match child.kind() {
                 "struct_item" | "enum_item" | "union_item" | "trait_item" | "type_item" => {
-                    if vis_prefix(child, source) == "pub" {
+                    if vis_prefix(child, source).starts_with("pub") {
                         if let Some(name) = child.child_by_field_name("name").map(|n| node_text(n, source)) {
                             types.push(name.to_string());
                         }
                     }
                 }
                 "function_item" => {
-                    if vis_prefix(child, source) == "pub" {
+                    if vis_prefix(child, source).starts_with("pub") {
                         if let Some(sig) = fn_signature(child, source) {
                             functions.push(sig);
                         }

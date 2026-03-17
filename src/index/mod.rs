@@ -1122,4 +1122,35 @@ def test_subtract():
             }
         }
     }
+
+    #[test]
+    fn rust_pub_crate_in_public_api() {
+        let src = r#"
+pub(crate) struct Foo {
+    pub(crate) field: i32,
+}
+
+pub(crate) fn bar() -> bool { true }
+
+pub struct Visible;
+
+pub(super) fn baz() -> i32 { 42 }
+
+fn private_fn() {}
+
+struct Private;
+"#;
+        let (types, functions) =
+            extract_public_api(src.as_bytes(), Language::Rust).unwrap();
+        // pub(crate) items should now appear
+        assert!(types.contains(&"Foo".to_string()), "missing pub(crate) struct Foo");
+        assert!(types.contains(&"Visible".to_string()), "missing pub struct Visible");
+        assert!(!types.contains(&"Private".to_string()), "private struct should be excluded");
+        // pub(crate) fn should appear
+        assert!(functions.iter().any(|f| f.contains("bar")), "missing pub(crate) fn bar");
+        // pub(super) fn should also appear
+        assert!(functions.iter().any(|f| f.contains("baz")), "missing pub(super) fn baz");
+        // private fn should not
+        assert!(!functions.iter().any(|f| f.contains("private_fn")), "private fn should be excluded");
+    }
 }
