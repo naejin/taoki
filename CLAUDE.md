@@ -36,6 +36,7 @@ Rust (.rs), Python (.py, .pyi), TypeScript (.ts, .tsx), JavaScript (.js, .jsx, .
 - Files over 2MB are skipped (`MAX_FILE_SIZE` in `index/mod.rs`).
 - Struct fields are truncated after 8 fields (`FIELD_TRUNCATE_THRESHOLD`).
 - Body insights have per-category limits: 12 calls (`MAX_CALLS`), 10 match arms (`MAX_MATCH_ARMS`), 8 error returns (`MAX_ERRORS`). Call names truncated at 40 chars, match targets at 30, arms at 30, errors at 40.
+- **Call prioritization is purely AST-structural — no name-based heuristics.** `extract_callee_name` classifies calls as primary (free/scoped) or method based on the call-site's grammar node kind (e.g., `identifier`/`scoped_identifier` vs `field_expression`). `is_noise_call` always returns false. This is a deliberate design choice: Taoki must work universally across all projects and languages without assumptions about which function names are "noise".
 - The `ignore` crate handles directory walking (respects .gitignore, global gitignore, and git exclude).
 
 ## Adding a New Language

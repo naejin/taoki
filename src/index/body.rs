@@ -183,12 +183,12 @@ fn is_call_node(node: Node, lang: Language) -> bool {
     }
 }
 
-/// Names to exclude from call lists per language (noise that duplicates other insights).
-fn is_noise_call(name: &str, lang: Language) -> bool {
-    match lang {
-        Language::Rust => matches!(name, "Ok" | "Err" | "Some" | "None"),
-        _ => false,
-    }
+/// No name-based filtering — call prioritization is purely AST-structural.
+/// Free/scoped calls appear before method calls based on call-site node kind,
+/// not on what the function is named. This keeps the system universal across
+/// all projects and languages.
+fn is_noise_call(_name: &str, _lang: Language) -> bool {
+    false
 }
 
 fn extract_calls(body: Node, source: &[u8], lang: Language) -> Vec<String> {
@@ -1008,7 +1008,7 @@ fn handler(cmd: &str) -> Result<(), AppError> {
         let insights = analyze_body(fn_node, &bytes, Language::Rust);
         let lines = insights.format_lines();
         assert_eq!(lines, vec![
-            "→ calls: connect, create, delete, list, load_config",
+            "→ calls: Err, Ok, connect, create, delete, list, load_config",
             "→ match: cmd → \"create\", \"delete\", \"list\", _",
             "→ errors: AppError::UnknownCommand, 2× ?",
         ]);
@@ -1256,10 +1256,10 @@ fn example() -> Result<()> {
         assert_eq!(errors, vec!["anyhow::bail!"]);
     }
 
-    // --- Rust noise call filtering test ---
+    // --- No name-based filtering: purely structural ---
 
     #[test]
-    fn test_extract_calls_rust_filters_noise() {
+    fn test_extract_calls_rust_no_name_filtering() {
         let src = r#"
 fn example() -> Result<(), Error> {
     let x = foo()?;
@@ -1271,9 +1271,10 @@ fn example() -> Result<(), Error> {
         let fn_node = root.child(0).unwrap();
         let body = fn_node.child_by_field_name("body").unwrap();
         let calls = extract_calls(body, &bytes, Language::Rust);
+        // No name-based filtering — Ok is a free call and appears in primary tier
         assert!(calls.contains(&"bar".to_string()));
         assert!(calls.contains(&"foo".to_string()));
-        assert!(!calls.contains(&"Ok".to_string()), "Ok should be filtered as noise");
+        assert!(calls.contains(&"Ok".to_string()), "Ok should not be filtered — no name heuristics");
     }
 
     // --- Call priority ordering tests ---
