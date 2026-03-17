@@ -1212,9 +1212,9 @@ Rewrite workflow skill for the new tool separation."
 **Files:**
 - Modify: `CLAUDE.md`
 
-- [ ] **Step 1: Update all tool references throughout CLAUDE.md**
+- [ ] **Step 1: Update all tool references throughout CLAUDE.md and README.md**
 
-Apply all changes listed in the spec's Post-Implementation section:
+Apply all changes listed in the spec's Post-Implementation section. Also update `README.md` if it references old tool names (`code_map`, `index`, `dependencies`).
 - Tool renames throughout: `code_map` → `radar`, `index` → `xray`, `dependencies` → `ripple`
 - `radar` no longer has `files` parameter
 - `radar` output format: directory grouping for >100 files, `GROUPING_THRESHOLD` constant
@@ -1240,8 +1240,8 @@ Expected: All tests pass
 - [ ] **Step 4: Commit**
 
 ```bash
-git add CLAUDE.md
-git commit -m "docs: update CLAUDE.md for radar/xray/ripple overhaul
+git add CLAUDE.md README.md
+git commit -m "docs: update CLAUDE.md and README.md for radar/xray/ripple overhaul
 
 Complete documentation update reflecting new tool names, removed
 batch skeletons, xray disk cache, ripple depth/symbols, radar
@@ -1280,3 +1280,4 @@ Verify output contains `"radar"`, `"xray"`, `"ripple"`.
 ```bash
 git tag v1.0.0
 ```
+
