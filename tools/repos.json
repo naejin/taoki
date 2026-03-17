@@ -1,0 +1,92 @@
+[
+  {
+    "name": "ripgrep",
+    "url": "https://github.com/BurntSushi/ripgrep",
+    "sha": "4519153e5e461527f4bca45b042fff45c4ec6fb9",
+    "lang": "Rust"
+  },
+  {
+    "name": "tokio",
+    "url": "https://github.com/tokio-rs/tokio",
+    "sha": "2db0070eb8ab1c543f5dc93b3392645d00ce43cc",
+    "lang": "Rust"
+  },
+  {
+    "name": "serde",
+    "url": "https://github.com/serde-rs/serde",
+    "sha": "fa7da4a93567ed347ad0735c28e439fca688ef26",
+    "lang": "Rust"
+  },
+  {
+    "name": "flask",
+    "url": "https://github.com/pallets/flask",
+    "sha": "4cae5d8e411b1e69949d8fae669afeacbd3e5908",
+    "lang": "Python"
+  },
+  {
+    "name": "fastapi",
+    "url": "https://github.com/tiangolo/fastapi",
+    "sha": "0127069d47b54aedb179931a862036f0a49c7554",
+    "lang": "Python"
+  },
+  {
+    "name": "black",
+    "url": "https://github.com/psf/black",
+    "sha": "28167fc7c071475c88e00419dac06722a7b5168d",
+    "lang": "Python"
+  },
+  {
+    "name": "next.js",
+    "url": "https://github.com/vercel/next.js",
+    "sha": "a060fbf9f7ba603bb32ab9cf9da48bfa9d3739d2",
+    "lang": "TypeScript"
+  },
+  {
+    "name": "zod",
+    "url": "https://github.com/colinhacks/zod",
+    "sha": "c7805073fef5b6b8857307c3d4b3597a70613bc2",
+    "lang": "TypeScript"
+  },
+  {
+    "name": "trpc",
+    "url": "https://github.com/trpc/trpc",
+    "sha": "67cdcee810cb95a78456d6c2dba8144a5c239fd3",
+    "lang": "TypeScript"
+  },
+  {
+    "name": "caddy",
+    "url": "https://github.com/caddyserver/caddy",
+    "sha": "8499e34e10c4f5d8445d8d3cca3338cbb13bc2e1",
+    "lang": "Go"
+  },
+  {
+    "name": "cobra",
+    "url": "https://github.com/spf13/cobra",
+    "sha": "61968e893eee2f27696c2fbc8e34fa5c4afaf7c4",
+    "lang": "Go"
+  },
+  {
+    "name": "hugo",
+    "url": "https://github.com/gohugoio/hugo",
+    "sha": "fa8658111f9c79b3f6381273fe822854a759fe1a",
+    "lang": "Go"
+  },
+  {
+    "name": "guava",
+    "url": "https://github.com/google/guava",
+    "sha": "e35bf7d85ad58bb1fbcdb6c6869e7cb532b99dae",
+    "lang": "Java"
+  },
+  {
+    "name": "spring-boot",
+    "url": "https://github.com/spring-projects/spring-boot",
+    "sha": "e71c75182e03ecca977c103b42e889085ab73785",
+    "lang": "Java"
+  },
+  {
+    "name": "deno",
+    "url": "https://github.com/denoland/deno",
+    "sha": "3998494368e93e46d8151e51d1b42152831b8b73",
+    "lang": "Rust, TS, JS"
+  }
+]

@@ -171,7 +171,41 @@ curl -fsSL https://raw.githubusercontent.com/naejin/taoki/master/scripts/uninsta
 
 Or manually: `rm -rf ~/.claude/plugins/taoki`
 
+## Benchmarks
+
+Tested against 15 open-source projects (run `cargo run --bin benchmark --features benchmark` to reproduce):
+
+<!-- BENCH:START -->
+| Project | Language | Files | Parsed | Parse % | Empty Skeletons | Reduction | Status |
+|---------|----------|-------|--------|---------|-----------------|-----------|--------|
+| ripgrep | Rust | 100 | 100 | 100% | 0 | 79% | PASS |
+| tokio | Rust | 767 | 767 | 100% | 4 | 82% | PASS |
+| serde | Rust | 208 | 208 | 100% | 0 | 82% | PASS |
+| flask | Python | 83 | 83 | 100% | 0 | 85% | PASS |
+| fastapi | Python | 1122 | 1122 | 100% | 0 | 80% | PASS |
+| black | Python | 307 | 307 | 100% | 0 | 94% | PASS |
+| next.js | TypeScript | 20808 | 20808 | 100% | 20 | 81% | PASS |
+| zod | TypeScript | 393 | 393 | 100% | 0 | 84% | PASS |
+| trpc | TypeScript | 861 | 861 | 100% | 0 | 79% | PASS |
+| caddy | Go | 301 | 301 | 100% | 0 | 80% | PASS |
+| cobra | Go | 36 | 36 | 100% | 0 | 88% | PASS |
+| hugo | Go | 914 | 914 | 100% | 3 | 79% | PASS |
+| guava | Java | 3243 | 3243 | 100% | 0 | 72% | PASS |
+| spring-boot | Java | 8342 | 8342 | 100% | 3 | 61% | PASS |
+| deno | Rust, TS, JS | 5032 | 5032 | 100% | 21 | 73% | FAIL |
+<!-- BENCH:END -->
+
+**Known limitation:** deno fails on empty skeletons due to `.d.ts` ambient declaration files (`declare namespace`, `declare function`). The TypeScript extractor does not yet handle `declare` blocks — these files parse successfully but produce no structural output. Tracked for a future extractor improvement.
+
+*Results from v0.9.3 against pinned commits. Run `cargo run --bin benchmark --features benchmark -- --update-pins` to refresh pins.*
+
 ## Changelog
+
+### v0.9.3
+
+- **Real-world benchmarks** — benchmark binary validates taoki against 15 open-source projects (ripgrep, tokio, next.js, hugo, spring-boot, deno, etc.). 100% parse rate across 42k+ files, 60-94% token reduction. Run with `cargo run --bin benchmark --features benchmark`
+- **Minified file detection** — new `is_minified()` function and `[minified]` tag in `code_map`. Detects bundled/minified code by average line length, preventing empty skeleton noise from webpack bundles, jQuery, etc.
+- **Test data directory detection** — `is_test_filename` now recognizes files inside `testdata/`, `tests/data/`, `tests/fixtures/`, `__fixtures__/`, `src/test/resources/`, and other well-known test data directories
 
 ### v0.9.2
 

@@ -8,6 +8,26 @@ pub(crate) mod body;
 
 pub(crate) const FIELD_TRUNCATE_THRESHOLD: usize = 8;
 pub(crate) const MAX_FILE_SIZE: u64 = 2 * 1024 * 1024;
+const MINIFIED_AVG_LINE_LEN: usize = 500;
+
+/// Returns true if the source appears to be minified or bundled code.
+///
+/// Detected by average line length exceeding 500 characters, which indicates
+/// machine-generated code with no useful structure to extract.
+pub fn is_minified(source: &[u8]) -> bool {
+    if source.is_empty() {
+        return false;
+    }
+    let newlines = source.iter().filter(|&&b| b == b'\n').count();
+    let lines = if newlines == 0 {
+        1
+    } else if source.last() == Some(&b'\n') {
+        newlines // trailing newline doesn't start a new line
+    } else {
+        newlines + 1 // no trailing newline means last line isn't counted
+    };
+    source.len() / lines > MINIFIED_AVG_LINE_LEN
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum IndexError {
@@ -1222,5 +1242,43 @@ public enum Planet {
         assert!(out.contains("private final double mass"), "missing mass field");
         assert!(out.contains("Planet(double mass, double radius)"), "missing constructor");
         assert!(out.contains("public double surfaceGravity()"), "missing method");
+    }
+
+    #[test]
+    fn minified_single_long_line() {
+        let source = "a".repeat(600);
+        assert!(is_minified(source.as_bytes()));
+    }
+
+    #[test]
+    fn minified_high_avg_line_length() {
+        let line = "a".repeat(600);
+        let source = format!("{}\n{}\n", line, line);
+        assert!(is_minified(source.as_bytes()));
+    }
+
+    #[test]
+    fn not_minified_normal_code() {
+        let source = "fn main() {\n    println!(\"hello\");\n}\n";
+        assert!(!is_minified(source.as_bytes()));
+    }
+
+    #[test]
+    fn not_minified_empty() {
+        assert!(!is_minified(b""));
+    }
+
+    #[test]
+    fn not_minified_two_long_lines_no_trailing_newline() {
+        // Two 300-char lines with one newline, no trailing newline.
+        // Avg line length is 300, well under 500 threshold.
+        let source = format!("{}\n{}", "a".repeat(300), "b".repeat(300));
+        assert!(!is_minified(source.as_bytes()));
+    }
+
+    #[test]
+    fn not_minified_single_line_under_threshold() {
+        let source = "a".repeat(400);
+        assert!(!is_minified(source.as_bytes()));
     }
 }

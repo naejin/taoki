@@ -348,6 +348,26 @@ pub fn is_test_filename(path: &std::path::Path) -> bool {
         || stem.ends_with(".spec")
     // Java: *Test.java, *Tests.java
         || (ext == "java" && (stem.ends_with("Test") || stem.ends_with("Tests")))
+    // Test data directories (universal conventions)
+        || is_test_data_path(path)
+}
+
+/// Checks if a file lives inside a well-known test data directory.
+///
+/// These directories contain fixture/input data for tests, not application code.
+/// Uses forward-slash normalized paths to work cross-platform.
+fn is_test_data_path(path: &std::path::Path) -> bool {
+    let s = path.to_string_lossy().replace('\\', "/");
+    const PATTERNS: &[&str] = &[
+        "/testdata/",      // Go convention
+        "/tests/data/",    // Python, Rust
+        "/tests/fixtures/", // general
+        "/test/fixtures/", // general
+        "/test/data/",     // general
+        "/__fixtures__/",  // Jest
+        "/src/test/resources/", // Java/Maven
+    ];
+    PATTERNS.iter().any(|p| s.contains(p))
 }
 
 fn call_code_map(args: &Value) -> ToolResult {
@@ -493,5 +513,23 @@ mod tests {
         let text = &result.content[0].text;
         assert!(text.contains("tests:"), "should collapse entire file as tests:\n{text}");
         assert!(!text.contains("test_login"), "individual test names should not appear:\n{text}");
+    }
+
+    #[test]
+    fn test_data_path_detected() {
+        assert!(is_test_filename(std::path::Path::new("project/tests/data/cases/pep_654.py")));
+        assert!(is_test_filename(std::path::Path::new("project/testdata/input.go")));
+        assert!(is_test_filename(std::path::Path::new("project/test/fixtures/sample.ts")));
+        assert!(is_test_filename(std::path::Path::new("project/__fixtures__/mock.js")));
+        assert!(is_test_filename(std::path::Path::new("project/src/test/resources/Config.java")));
+    }
+
+    #[test]
+    fn non_test_data_path_not_detected() {
+        assert!(!is_test_filename(std::path::Path::new("src/data/models.py")));
+        assert!(!is_test_filename(std::path::Path::new("src/fixtures.rs")));
+        assert!(!is_test_filename(std::path::Path::new("lib/data/parser.ts")));
+        assert!(!is_test_filename(std::path::Path::new("src/fixtures/models.py")));
+        assert!(!is_test_filename(std::path::Path::new("app/fixtures/seed.ts")));
     }
 }

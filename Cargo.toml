@@ -1,6 +1,6 @@
 [package]
 name = "taoki"
-version = "0.9.2"
+version = "0.9.3"
 edition = "2021"
 
 [dependencies]
@@ -30,3 +30,11 @@ harness = false
 [[bench]]
 name = "token_ratio"
 harness = false
+
+[[bin]]
+name = "benchmark"
+path = "tools/benchmark.rs"
+required-features = ["benchmark"]
+
+[features]
+benchmark = []
