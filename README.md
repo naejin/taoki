@@ -183,13 +183,13 @@ Tested against 15 open-source projects (run `cargo run --bin benchmark --feature
 | serde | Rust | 208 | 208 | 100% | 0 | 82% | PASS |
 | flask | Python | 83 | 83 | 100% | 0 | 85% | PASS |
 | fastapi | Python | 1122 | 1122 | 100% | 0 | 80% | PASS |
-| black | Python | 307 | 307 | 100% | 9 | 94% | FAIL |
+| black | Python | 307 | 307 | 100% | 0 | 94% | PASS |
 | next.js | TypeScript | 20808 | 20808 | 100% | 20 | 81% | PASS |
 | zod | TypeScript | 393 | 393 | 100% | 0 | 84% | PASS |
 | trpc | TypeScript | 861 | 861 | 100% | 0 | 79% | PASS |
 | caddy | Go | 301 | 301 | 100% | 0 | 80% | PASS |
 | cobra | Go | 36 | 36 | 100% | 0 | 88% | PASS |
-| hugo | Go | 914 | 914 | 100% | 4 | 79% | PASS |
+| hugo | Go | 914 | 914 | 100% | 3 | 79% | PASS |
 | guava | Java | 3243 | 3243 | 100% | 0 | 72% | PASS |
 | spring-boot | Java | 8342 | 8342 | 100% | 3 | 61% | PASS |
 | deno | Rust, TS, JS | 5032 | 5032 | 100% | 21 | 73% | FAIL |
