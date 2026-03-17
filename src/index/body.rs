@@ -116,28 +116,30 @@ fn walk_body(node: Node, lang: Language, visitor: &mut impl FnMut(Node)) {
 
 // --- Call extraction ---
 
-/// Extract the callee name from a call expression node.
-fn extract_callee_name<'a>(node: Node<'a>, source: &'a [u8], lang: Language) -> Option<&'a str> {
+/// Extract the callee name and whether it's a method call from a call expression node.
+/// Returns `(name, is_method)` where `is_method` is true for calls on a receiver
+/// (e.g., `obj.method()`) and false for free/scoped calls (e.g., `foo()`, `Mod::func()`).
+fn extract_callee_name<'a>(node: Node<'a>, source: &'a [u8], lang: Language) -> Option<(&'a str, bool)> {
     match lang {
         Language::Rust => {
             let func = node.child_by_field_name("function")?;
             match func.kind() {
-                "identifier" => Some(node_text(func, source)),
-                "scoped_identifier" => Some(node_text(func, source)),
+                "identifier" => Some((node_text(func, source), false)),
+                "scoped_identifier" => Some((node_text(func, source), false)),
                 "field_expression" => {
                     let field = func.child_by_field_name("field")?;
-                    Some(node_text(field, source))
+                    Some((node_text(field, source), true))
                 }
-                _ => Some(node_text(func, source)),
+                _ => Some((node_text(func, source), false)),
             }
         }
         Language::Python => {
             let func = node.child_by_field_name("function")?;
             match func.kind() {
-                "identifier" => Some(node_text(func, source)),
+                "identifier" => Some((node_text(func, source), false)),
                 "attribute" => {
                     let attr = func.child_by_field_name("attribute")?;
-                    Some(node_text(attr, source))
+                    Some((node_text(attr, source), true))
                 }
                 _ => None,
             }
@@ -145,10 +147,10 @@ fn extract_callee_name<'a>(node: Node<'a>, source: &'a [u8], lang: Language) -> 
         Language::TypeScript | Language::JavaScript => {
             let func = node.child_by_field_name("function")?;
             match func.kind() {
-                "identifier" => Some(node_text(func, source)),
+                "identifier" => Some((node_text(func, source), false)),
                 "member_expression" => {
                     let prop = func.child_by_field_name("property")?;
-                    Some(node_text(prop, source))
+                    Some((node_text(prop, source), true))
                 }
                 _ => None,
             }
@@ -156,17 +158,18 @@ fn extract_callee_name<'a>(node: Node<'a>, source: &'a [u8], lang: Language) -> 
         Language::Go => {
             let func = node.child_by_field_name("function")?;
             match func.kind() {
-                "identifier" => Some(node_text(func, source)),
+                "identifier" => Some((node_text(func, source), false)),
                 "selector_expression" => {
                     let field = func.child_by_field_name("field")?;
-                    Some(node_text(field, source))
+                    Some((node_text(field, source), true))
                 }
                 _ => None,
             }
         }
         Language::Java => {
             let name = node.child_by_field_name("name")?;
-            Some(node_text(name, source))
+            let is_method = node.child_by_field_name("object").is_some();
+            Some((node_text(name, source), is_method))
         }
     }
 }
@@ -189,18 +192,27 @@ fn is_noise_call(name: &str, lang: Language) -> bool {
 }
 
 fn extract_calls(body: Node, source: &[u8], lang: Language) -> Vec<String> {
-    let mut seen = std::collections::BTreeSet::new();
+    let mut primary = std::collections::BTreeSet::new();
+    let mut methods = std::collections::BTreeSet::new();
     walk_body(body, lang, &mut |node| {
         if is_call_node(node, lang) {
-            if let Some(name) = extract_callee_name(node, source, lang) {
+            if let Some((name, is_method)) = extract_callee_name(node, source, lang) {
                 if !is_noise_call(name, lang) {
                     let truncated = truncate(name, INSIGHT_CALL_TRUNCATE);
-                    seen.insert(truncated);
+                    if is_method {
+                        methods.insert(truncated);
+                    } else {
+                        primary.insert(truncated);
+                    }
                 }
             }
         }
     });
-    seen.into_iter().collect() // BTreeSet gives sorted order
+    // Free/scoped calls first (domain orchestration), then method calls (plumbing)
+    let mut result: Vec<String> = primary.into_iter().collect();
+    let remaining = MAX_CALLS.saturating_sub(result.len());
+    result.extend(methods.into_iter().take(remaining));
+    result
 }
 
 // --- Match/switch arm extraction ---
@@ -763,7 +775,8 @@ func example() {
             .unwrap();
         let body = fn_node.child_by_field_name("body").unwrap();
         let calls = extract_calls(body, &bytes, Language::Go);
-        assert_eq!(calls, vec!["Method", "alpha", "beta", "foo"]);
+        // Free calls (alpha, beta, foo) before method calls (Method via selector_expression)
+        assert_eq!(calls, vec!["alpha", "beta", "foo", "Method"]);
     }
 
     #[test]
@@ -1080,7 +1093,7 @@ func handle(cmd string) error {
         let insights = analyze_body(fn_node, &bytes, Language::Go);
         let lines = insights.format_lines();
         assert_eq!(lines, vec![
-            "→ calls: New, start, stop, validate",
+            "→ calls: start, stop, validate, New",
             "→ match: cmd → \"start\", \"stop\", default",
             "→ errors: errors.New",
         ]);
@@ -1261,6 +1274,146 @@ fn example() -> Result<(), Error> {
         assert!(calls.contains(&"bar".to_string()));
         assert!(calls.contains(&"foo".to_string()));
         assert!(!calls.contains(&"Ok".to_string()), "Ok should be filtered as noise");
+    }
+
+    // --- Call priority ordering tests ---
+
+    #[test]
+    fn test_calls_priority_rust_free_before_methods() {
+        let src = r#"
+fn example() {
+    let x = items.clone();
+    let y = items.iter().map(|i| i).collect();
+    compute(x);
+    Config::new();
+    y.is_empty();
+    process(y);
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Rust);
+        let root = tree.root_node();
+        let fn_node = root.child(0).unwrap();
+        let body = fn_node.child_by_field_name("body").unwrap();
+        let calls = extract_calls(body, &bytes, Language::Rust);
+        // Free/scoped first (sorted), then method calls (sorted)
+        assert_eq!(calls, vec![
+            "Config::new", "compute", "process",
+            "clone", "collect", "is_empty", "iter", "map",
+        ]);
+    }
+
+    #[test]
+    fn test_calls_priority_python_free_before_methods() {
+        let src = r#"
+def example(items):
+    validate(items)
+    result = items.filter(lambda x: x)
+    result.sort()
+    save(result)
+    result.append(1)
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Python);
+        let root = tree.root_node();
+        let fn_node = root.child(0).unwrap();
+        let body = fn_node.child_by_field_name("body").unwrap();
+        let calls = extract_calls(body, &bytes, Language::Python);
+        // Free calls first, then method calls
+        assert_eq!(calls, vec![
+            "save", "validate",
+            "append", "filter", "sort",
+        ]);
+    }
+
+    #[test]
+    fn test_calls_priority_ts_free_before_methods() {
+        let src = r#"
+function example(items: any[]) {
+    validate(items);
+    const result = items.filter(x => x);
+    result.push(1);
+    process(result);
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::TypeScript);
+        let root = tree.root_node();
+        let fn_node = root.child(0).unwrap();
+        let body = fn_node.child_by_field_name("body").unwrap();
+        let calls = extract_calls(body, &bytes, Language::TypeScript);
+        assert_eq!(calls, vec![
+            "process", "validate",
+            "filter", "push",
+        ]);
+    }
+
+    #[test]
+    fn test_calls_priority_java_free_before_methods() {
+        let src = r#"
+class Example {
+    void example() {
+        validate(data);
+        obj.save();
+        process(data);
+        obj.notify();
+    }
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Java);
+        let root = tree.root_node();
+        let class_node = root.child(0).unwrap();
+        let body = class_node.child_by_field_name("body").unwrap();
+        let mut cursor = body.walk();
+        let method = body.children(&mut cursor)
+            .find(|c| c.kind() == "method_declaration")
+            .unwrap();
+        let method_body = method.child_by_field_name("body").unwrap();
+        let calls = extract_calls(method_body, &bytes, Language::Java);
+        // Free calls (no object receiver) first, then method calls (with object)
+        assert_eq!(calls, vec![
+            "process", "validate",
+            "notify", "save",
+        ]);
+    }
+
+    #[test]
+    fn test_calls_priority_methods_fill_remaining_budget() {
+        // When free calls fill the budget, method calls are truncated
+        let mut fn_body = String::from("fn example() {\n");
+        for i in 0..14 {
+            fn_body.push_str(&format!("    free_fn_{i}();\n"));
+        }
+        fn_body.push_str("    x.method_a();\n");
+        fn_body.push_str("    x.method_b();\n");
+        fn_body.push_str("}\n");
+        let (tree, bytes) = parse_and_get_fn_body(&fn_body, Language::Rust);
+        let root = tree.root_node();
+        let fn_node = root.child(0).unwrap();
+        let body = fn_node.child_by_field_name("body").unwrap();
+        let calls = extract_calls(body, &bytes, Language::Rust);
+        // MAX_CALLS is 12 — 14 free calls exceed it, but all 14 primary calls are kept
+        // (MAX_CALLS limits methods budget, not primary). Actually, let's verify behavior:
+        // primary has 14 items, methods has 2. Result = all 14 primary + 0 methods (remaining=0)
+        assert_eq!(calls.len(), 14, "all primary calls should be included");
+        assert!(!calls.contains(&"method_a".to_string()), "no budget for method calls");
+        assert!(!calls.contains(&"method_b".to_string()), "no budget for method calls");
+    }
+
+    #[test]
+    fn test_calls_priority_only_methods() {
+        // When there are no free calls, all method calls appear
+        let src = r#"
+fn example(items: Vec<i32>) {
+    items.iter().map(|x| x + 1).collect();
+    items.len();
+    items.is_empty();
+}
+"#;
+        let (tree, bytes) = parse_and_get_fn_body(src, Language::Rust);
+        let root = tree.root_node();
+        let fn_node = root.child(0).unwrap();
+        let body = fn_node.child_by_field_name("body").unwrap();
+        let calls = extract_calls(body, &bytes, Language::Rust);
+        // All are method calls, no free calls — methods fill the full budget
+        assert_eq!(calls, vec!["collect", "is_empty", "iter", "len", "map"]);
     }
 
     #[test]

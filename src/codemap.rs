@@ -34,7 +34,7 @@ struct CacheEntry {
     skeleton: String,
 }
 
-const CACHE_VERSION: u32 = 4;
+const CACHE_VERSION: u32 = 5;
 const CACHE_DIR: &str = ".cache/taoki";
 const CACHE_FILE: &str = "code-map.json";
 

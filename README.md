@@ -67,7 +67,7 @@ external:
 - **70–90% fewer tokens** — Claude reads structure, not source, then targets specific line ranges
 - **Heuristic tags** — files auto-tagged as `[entry-point]`, `[tests]`, `[error-types]`, `[data-models]`, `[module-root]`, and more
 - **Docstring extraction** — first line of doc comments (`///`, `/** */`, Python docstrings) shown inline as `/// summary`
-- **Body insights** — functions show call graphs (`→ calls:`), match/switch arms (`→ match:`), and error sites (`→ errors:`)
+- **Body insights** — functions show call graphs (`→ calls:`), match/switch arms (`→ match:`), and error sites (`→ errors:`). Calls are priority-ordered: free/scoped calls (domain logic) appear before method calls (plumbing), so the signal is always visible first
 - **Test collapsing** — test code detected and collapsed across all supported languages
 - **Fast caching** — blake3 content hashing with file-level locking; repeated calls are near-instant
 - **Tree-sitter parsing** — accurate, fast, no regex heuristics
