@@ -1,7 +1,8 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -10,6 +11,77 @@ use crate::index;
 
 thread_local! {
     static INDEX_CACHE: RefCell<HashMap<PathBuf, (String, String)>> = RefCell::new(HashMap::new());
+}
+
+const XRAY_CACHE_VERSION: u32 = 1;
+const XRAY_CACHE_DIR: &str = ".cache/taoki";
+const XRAY_CACHE_FILE: &str = "xray.json";
+
+#[derive(Debug, Serialize, Deserialize)]
+struct XrayDiskCache {
+    version: u32,
+    files: HashMap<String, XrayDiskEntry>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct XrayDiskEntry {
+    hash: String,
+    skeleton: String,
+}
+
+fn find_repo_root(file_path: &Path) -> Option<PathBuf> {
+    let mut dir = file_path.parent()?;
+    loop {
+        if dir.join(".git").exists() {
+            return Some(dir.to_path_buf());
+        }
+        dir = dir.parent()?;
+    }
+}
+
+fn xray_cache_path(root: &Path) -> PathBuf {
+    root.join(XRAY_CACHE_DIR).join(XRAY_CACHE_FILE)
+}
+
+fn load_xray_cache(root: &Path) -> XrayDiskCache {
+    let path = xray_cache_path(root);
+    let file = match std::fs::OpenOptions::new().read(true).open(&path) {
+        Ok(f) => f,
+        Err(_) => return XrayDiskCache { version: XRAY_CACHE_VERSION, files: HashMap::new() },
+    };
+    if file.lock_shared().is_ok() {
+        let data = match std::fs::read_to_string(&path) {
+            Ok(d) => d,
+            Err(_) => { let _ = file.unlock(); return XrayDiskCache { version: XRAY_CACHE_VERSION, files: HashMap::new() }; }
+        };
+        let _ = file.unlock();
+        match serde_json::from_str::<XrayDiskCache>(&data) {
+            Ok(c) if c.version == XRAY_CACHE_VERSION => c,
+            _ => XrayDiskCache { version: XRAY_CACHE_VERSION, files: HashMap::new() },
+        }
+    } else {
+        XrayDiskCache { version: XRAY_CACHE_VERSION, files: HashMap::new() }
+    }
+}
+
+fn save_xray_cache(root: &Path, cache: &XrayDiskCache) {
+    let path = xray_cache_path(root);
+    if let Some(parent) = path.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            return;
+        }
+    }
+    let tmp = path.with_extension("tmp");
+    if let Ok(json) = serde_json::to_string_pretty(cache) {
+        if std::fs::write(&tmp, &json).is_ok() {
+            if let Ok(f) = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(&path) {
+                if f.lock_exclusive().is_ok() {
+                    let _ = std::fs::rename(&tmp, &path);
+                    let _ = f.unlock();
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -293,6 +365,31 @@ fn call_xray(args: &Value) -> ToolResult {
         };
     }
 
+    // Check disk cache
+    let repo_root = find_repo_root(path);
+    let rel_path = repo_root.as_ref().and_then(|root| {
+        path.strip_prefix(root).ok().map(|r| r.to_string_lossy().replace('\\', "/"))
+    });
+
+    if let (Some(root), Some(ref rel)) = (&repo_root, &rel_path) {
+        let disk_cache = load_xray_cache(root);
+        if let Some(entry) = disk_cache.files.get(rel) {
+            if entry.hash == hash {
+                // Populate in-memory cache too
+                INDEX_CACHE.with(|cache| {
+                    cache.borrow_mut().insert(path_buf.clone(), (hash.clone(), entry.skeleton.clone()));
+                });
+                return ToolResult {
+                    content: vec![ToolContent {
+                        r#type: "text".to_string(),
+                        text: entry.skeleton.clone(),
+                    }],
+                    is_error: false,
+                };
+            }
+        }
+    }
+
     // If entire file is a test file by naming convention, collapse it
     if is_test_filename(path) {
         let total_lines = source.iter().filter(|&&b| b == b'\n').count() + 1;
@@ -302,6 +399,15 @@ fn call_xray(args: &Value) -> ToolResult {
                 .borrow_mut()
                 .insert(path_buf.clone(), (hash.clone(), base_skeleton.clone()));
         });
+        // Save to disk cache
+        if let (Some(root), Some(ref rel)) = (&repo_root, &rel_path) {
+            let mut disk_cache = load_xray_cache(root);
+            disk_cache.files.insert(rel.clone(), XrayDiskEntry {
+                hash: hash.clone(),
+                skeleton: base_skeleton.clone(),
+            });
+            save_xray_cache(root, &disk_cache);
+        }
         return ToolResult {
             content: vec![ToolContent {
                 r#type: "text".to_string(),
@@ -317,8 +423,17 @@ fn call_xray(args: &Value) -> ToolResult {
             INDEX_CACHE.with(|cache| {
                 cache
                     .borrow_mut()
-                    .insert(path_buf, (hash, raw_skeleton.clone()));
+                    .insert(path_buf, (hash.clone(), raw_skeleton.clone()));
             });
+            // Save to disk cache
+            if let (Some(root), Some(ref rel)) = (&repo_root, &rel_path) {
+                let mut disk_cache = load_xray_cache(root);
+                disk_cache.files.insert(rel.clone(), XrayDiskEntry {
+                    hash: hash.clone(),
+                    skeleton: raw_skeleton.clone(),
+                });
+                save_xray_cache(root, &disk_cache);
+            }
             ToolResult {
                 content: vec![ToolContent {
                     r#type: "text".to_string(),
@@ -523,6 +638,80 @@ mod tests {
         let tools = defs["tools"].as_array().unwrap();
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert_eq!(names, vec!["xray", "radar", "ripple"]);
+    }
+
+    #[test]
+    fn xray_disk_cache_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join(".git")).unwrap();
+        let file = dir.path().join("lib.rs");
+        fs::write(&file, "pub fn hello() {}\n").unwrap();
+
+        let args = serde_json::json!({ "path": file.to_str().unwrap() });
+
+        // First call — parses and caches
+        let r1 = call_xray(&args);
+        assert!(!r1.is_error);
+
+        // Clear in-memory cache to force disk read
+        INDEX_CACHE.with(|c| c.borrow_mut().clear());
+
+        // Second call — should hit disk cache
+        let r2 = call_xray(&args);
+        assert!(!r2.is_error);
+        assert_eq!(r1.content[0].text, r2.content[0].text);
+
+        // Verify cache file exists
+        let cache_path = dir.path().join(".cache/taoki/xray.json");
+        assert!(cache_path.exists(), "disk cache should exist");
+    }
+
+    #[test]
+    fn xray_disk_cache_invalidated_on_change() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join(".git")).unwrap();
+        let file = dir.path().join("lib.rs");
+        fs::write(&file, "pub fn hello() {}\n").unwrap();
+
+        let args = serde_json::json!({ "path": file.to_str().unwrap() });
+        let r1 = call_xray(&args);
+
+        // Modify the file
+        fs::write(&file, "pub fn hello() {}\npub fn world() {}\n").unwrap();
+        INDEX_CACHE.with(|c| c.borrow_mut().clear());
+
+        let r2 = call_xray(&args);
+        assert_ne!(r1.content[0].text, r2.content[0].text, "should re-parse changed file");
+    }
+
+    #[test]
+    fn xray_works_outside_git_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("lib.rs");
+        fs::write(&file, "pub fn hello() {}\n").unwrap();
+
+        let args = serde_json::json!({ "path": file.to_str().unwrap() });
+        let result = call_xray(&args);
+        assert!(!result.is_error, "should work without git repo");
+        assert!(result.content[0].text.contains("hello"));
+    }
+
+    #[test]
+    fn xray_corrupt_cache_falls_back_to_parse() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join(".git")).unwrap();
+        let file = dir.path().join("lib.rs");
+        fs::write(&file, "pub fn hello() {}\n").unwrap();
+
+        // Write corrupt cache
+        let cache_dir = dir.path().join(".cache/taoki");
+        fs::create_dir_all(&cache_dir).unwrap();
+        fs::write(cache_dir.join("xray.json"), "{{not valid json}}").unwrap();
+
+        let args = serde_json::json!({ "path": file.to_str().unwrap() });
+        let result = call_xray(&args);
+        assert!(!result.is_error, "should gracefully fall back to parsing");
+        assert!(result.content[0].text.contains("hello"));
     }
 
     #[test]
