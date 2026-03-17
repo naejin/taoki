@@ -1373,3 +1373,4 @@ Expected: All tests pass, no clippy warnings
 git add Cargo.toml Cargo.lock .claude-plugin/plugin.json src/codemap.rs src/deps.rs CLAUDE.md README.md
 git commit -m "release: bump version to 0.9.2 with cache invalidation and doc updates"
 ```
+
