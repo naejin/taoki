@@ -523,23 +523,39 @@ fn resolve_ts(import_path: &str, current_file: &str, all_files: &[String]) -> Op
 }
 
 fn resolve_java(import_path: &str, all_files: &[String]) -> Option<String> {
-    let prefixes = ["", "src/main/java/", "src/"];
-    let path_str = import_path.replace('.', "/");
-    for prefix in &prefixes {
-        let candidate = format!("{prefix}{path_str}.java");
-        if all_files.iter().any(|f| f == &candidate) {
-            return Some(candidate);
-        }
+    // Handle wildcard imports: "org.springframework.boot.*" → find any file in that package
+    if let Some(pkg) = import_path.strip_suffix(".*") {
+        let dir_suffix = pkg.replace('.', "/") + "/";
+        return all_files
+            .iter()
+            .find(|f| {
+                if !f.ends_with(".java") {
+                    return false;
+                }
+                // Check if file is in the target directory (with any source root prefix)
+                if let Some(pos) = f.rfind(&dir_suffix) {
+                    // Boundary check: must be preceded by "/" or be at start
+                    (pos == 0 || f.as_bytes()[pos - 1] == b'/')
+                        && !f[pos + dir_suffix.len()..].contains('/')
+                } else {
+                    false
+                }
+            })
+            .cloned();
     }
 
-    if let Some(dot_pos) = import_path.rfind('.') {
-        let module = &import_path[..dot_pos];
-        let module_path = module.replace('.', "/");
-        for prefix in &prefixes {
-            let candidate = format!("{prefix}{module_path}.java");
-            if all_files.iter().any(|f| f == &candidate) {
-                return Some(candidate);
-            }
+    // Progressive suffix matching: try full path, then strip segments from the end
+    // (handles normal imports, static imports, inner classes)
+    let segments: Vec<&str> = import_path.split('.').collect();
+    for take in (1..=segments.len()).rev() {
+        let suffix = segments[..take].join("/") + ".java";
+        // Check with "/" boundary to prevent false substring matches
+        let with_sep = format!("/{suffix}");
+        if let Some(found) = all_files
+            .iter()
+            .find(|f| f.ends_with(&with_sep) || *f == &suffix)
+        {
+            return Some(found.clone());
         }
     }
     None
@@ -1697,5 +1713,138 @@ mod tests {
             main_imports.iter().any(|i| i.path == "src/helper.rs" && !i.external),
             "should pick up new import: {main_imports:?}"
         );
+    }
+
+    #[test]
+    fn java_resolve_guava_style_layout() {
+        let all_files = vec![
+            "guava/src/com/google/common/collect/ImmutableMap.java".to_string(),
+            "guava/src/com/google/common/collect/ImmutableList.java".to_string(),
+        ];
+        let result = resolve_import(
+            "com.google.common.collect.ImmutableMap",
+            Language::Java,
+            "guava/src/com/google/common/collect/ImmutableList.java",
+            &all_files,
+            None,
+            None,
+        );
+        assert_eq!(
+            result,
+            Some("guava/src/com/google/common/collect/ImmutableMap.java".to_string()),
+            "should resolve via suffix matching regardless of source root"
+        );
+    }
+
+    #[test]
+    fn java_resolve_spring_boot_deep_layout() {
+        let all_files = vec![
+            "core/spring-boot/src/main/java/org/springframework/boot/SpringApplication.java"
+                .to_string(),
+            "core/spring-boot/src/main/java/org/springframework/boot/Banner.java".to_string(),
+        ];
+        let result = resolve_import(
+            "org.springframework.boot.Banner",
+            Language::Java,
+            "core/spring-boot/src/main/java/org/springframework/boot/SpringApplication.java",
+            &all_files,
+            None,
+            None,
+        );
+        assert_eq!(
+            result,
+            Some(
+                "core/spring-boot/src/main/java/org/springframework/boot/Banner.java".to_string()
+            ),
+        );
+    }
+
+    #[test]
+    fn java_resolve_static_import() {
+        let all_files = vec!["src/main/java/com/example/Preconditions.java".to_string()];
+        let result = resolve_import(
+            "com.example.Preconditions.checkNotNull",
+            Language::Java,
+            "src/main/java/com/example/App.java",
+            &all_files,
+            None,
+            None,
+        );
+        assert_eq!(
+            result,
+            Some("src/main/java/com/example/Preconditions.java".to_string()),
+            "should strip method name and resolve to class file"
+        );
+    }
+
+    #[test]
+    fn java_resolve_deep_static_import() {
+        let all_files = vec!["src/com/example/ImmutableMap.java".to_string()];
+        let result = resolve_import(
+            "com.example.ImmutableMap.Builder.of",
+            Language::Java,
+            "src/com/example/App.java",
+            &all_files,
+            None,
+            None,
+        );
+        assert_eq!(
+            result,
+            Some("src/com/example/ImmutableMap.java".to_string()),
+            "should progressively strip segments to find the file"
+        );
+    }
+
+    #[test]
+    fn java_resolve_wildcard_import() {
+        let all_files = vec![
+            "src/main/java/org/springframework/boot/SpringApplication.java".to_string(),
+            "src/main/java/org/springframework/boot/Banner.java".to_string(),
+        ];
+        let result = resolve_import(
+            "org.springframework.boot.*",
+            Language::Java,
+            "src/main/java/org/springframework/boot/autoconfigure/App.java",
+            &all_files,
+            None,
+            None,
+        );
+        assert!(
+            result.is_some(),
+            "wildcard import should resolve to some file in the package"
+        );
+        let resolved = result.unwrap();
+        assert!(
+            resolved.contains("org/springframework/boot/"),
+            "should be in the correct package directory: {resolved}"
+        );
+    }
+
+    #[test]
+    fn java_resolve_boundary_no_false_match() {
+        let all_files = vec!["src/mycom/example/Bar.java".to_string()];
+        let result = resolve_import(
+            "com.example.Bar",
+            Language::Java,
+            "src/com/example/Foo.java",
+            &all_files,
+            None,
+            None,
+        );
+        assert_eq!(result, None, "should not match across word boundaries");
+    }
+
+    #[test]
+    fn java_resolve_flat_layout() {
+        let all_files = vec!["com/example/Foo.java".to_string()];
+        let result = resolve_import(
+            "com.example.Foo",
+            Language::Java,
+            "com/example/Bar.java",
+            &all_files,
+            None,
+            None,
+        );
+        assert_eq!(result, Some("com/example/Foo.java".to_string()));
     }
 }
