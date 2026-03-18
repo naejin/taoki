@@ -758,6 +758,26 @@ mod tests {
     }
 
     #[test]
+    fn grouping_threshold_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        // Exactly 100 files — should use flat format (threshold is >100)
+        for i in 0..100 {
+            let subdir = dir.path().join(format!("pkg/{}", i / 20));
+            fs::create_dir_all(&subdir).unwrap();
+            fs::write(subdir.join(format!("f{i}.rs")), format!("pub fn x{i}() {{}}\n")).unwrap();
+        }
+        let result = build_code_map(dir.path(), &[]).unwrap();
+        assert!(result.contains("public_functions:"), "100 files should use flat format: {}", result.lines().next().unwrap_or(""));
+
+        // Add one more — 101 files triggers grouped format
+        let subdir = dir.path().join("pkg/5");
+        fs::create_dir_all(&subdir).unwrap();
+        fs::write(subdir.join("extra.rs"), "pub fn extra() {}\n").unwrap();
+        let result = build_code_map(dir.path(), &[]).unwrap();
+        assert!(!result.contains("public_functions:"), "101 files should use grouped format");
+    }
+
+    #[test]
     fn code_map_multiline_signatures_collapsed_to_single_line() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(

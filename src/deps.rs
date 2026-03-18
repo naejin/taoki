@@ -769,13 +769,21 @@ fn collect_used_by(
         return;
     }
 
-    let mut users: Vec<(String, Vec<String>)> = Vec::new();
+    // Merge symbols from all imports of target per file, then sort for stable output
+    let mut user_map: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
     for (other_file, fi) in &graph.graph {
-        if let Some(imp) = fi.imports.iter().find(|i| !i.external && i.path == target) {
-            users.push((other_file.clone(), imp.symbols.clone()));
+        for imp in &fi.imports {
+            if !imp.external && imp.path == target {
+                let entry = user_map.entry(other_file.clone()).or_default();
+                for sym in &imp.symbols {
+                    if !entry.contains(sym) {
+                        entry.push(sym.clone());
+                    }
+                }
+            }
         }
     }
-    users.sort_by(|a, b| a.0.cmp(&b.0));
+    let users: Vec<(String, Vec<String>)> = user_map.into_iter().collect();
 
     let indent = if current_depth == 1 {
         "  ".to_string()
@@ -1451,6 +1459,24 @@ mod tests {
 
         let out = query_deps(&graph, "a.py", 1);
         assert!(out.contains("b.py (Foo, Bar)"), "should show symbols: {out}");
+    }
+
+    #[test]
+    fn query_deps_used_by_merges_symbols_from_multiple_imports() {
+        let mut graph = DepsGraph { version: DEPS_VERSION, graph: HashMap::new() };
+        graph.graph.insert("target.py".to_string(), FileImports { imports: vec![] });
+        // user.py has two separate import statements from target.py
+        graph.graph.insert("user.py".to_string(), FileImports {
+            imports: vec![
+                ImportInfo { path: "target.py".to_string(), symbols: vec!["A".to_string()], external: false },
+                ImportInfo { path: "target.py".to_string(), symbols: vec!["B".to_string()], external: false },
+            ],
+        });
+
+        let out = query_deps(&graph, "target.py", 1);
+        assert!(out.contains("A"), "should include symbol A: {out}");
+        assert!(out.contains("B"), "should include symbol B: {out}");
+        assert!(out.contains("user.py (A, B)"), "should merge symbols: {out}");
     }
 
     #[test]

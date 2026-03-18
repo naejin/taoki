@@ -45,23 +45,30 @@ fn xray_cache_path(root: &Path) -> PathBuf {
 
 fn load_xray_cache(root: &Path) -> XrayDiskCache {
     let path = xray_cache_path(root);
-    let file = match std::fs::OpenOptions::new().read(true).open(&path) {
-        Ok(f) => f,
-        Err(_) => return XrayDiskCache { version: XRAY_CACHE_VERSION, files: HashMap::new() },
+    let lock_path = path.with_extension("lock");
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path);
+    let _lock_guard = if let Ok(f) = lock_file {
+        if f.lock_shared().is_ok() { Some(f) } else { None }
+    } else {
+        None
     };
-    if file.lock_shared().is_ok() {
-        let data = match std::fs::read_to_string(&path) {
-            Ok(d) => d,
-            Err(_) => { let _ = file.unlock(); return XrayDiskCache { version: XRAY_CACHE_VERSION, files: HashMap::new() }; }
-        };
-        let _ = file.unlock();
-        match serde_json::from_str::<XrayDiskCache>(&data) {
+
+    let result = match std::fs::read_to_string(&path) {
+        Ok(data) => match serde_json::from_str::<XrayDiskCache>(&data) {
             Ok(c) if c.version == XRAY_CACHE_VERSION => c,
             _ => XrayDiskCache { version: XRAY_CACHE_VERSION, files: HashMap::new() },
-        }
-    } else {
-        XrayDiskCache { version: XRAY_CACHE_VERSION, files: HashMap::new() }
+        },
+        Err(_) => XrayDiskCache { version: XRAY_CACHE_VERSION, files: HashMap::new() },
+    };
+    if let Some(f) = _lock_guard {
+        let _ = f.unlock();
     }
+    result
 }
 
 fn save_xray_cache(root: &Path, cache: &XrayDiskCache) {
@@ -71,17 +78,27 @@ fn save_xray_cache(root: &Path, cache: &XrayDiskCache) {
             return;
         }
     }
-    let tmp = path.with_extension("tmp");
+    let lock_path = path.with_extension("lock");
+    let lock_file = match std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+    {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+    if lock_file.lock_exclusive().is_err() {
+        return;
+    }
     if let Ok(json) = serde_json::to_string_pretty(cache) {
+        let tmp = path.with_extension("tmp");
         if std::fs::write(&tmp, &json).is_ok() {
-            if let Ok(f) = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(&path) {
-                if f.lock_exclusive().is_ok() {
-                    let _ = std::fs::rename(&tmp, &path);
-                    let _ = f.unlock();
-                }
-            }
+            let _ = std::fs::rename(&tmp, &path);
         }
     }
+    let _ = lock_file.unlock();
 }
 
 #[derive(Debug, Deserialize)]
