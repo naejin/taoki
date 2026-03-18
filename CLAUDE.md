@@ -83,15 +83,14 @@ Taoki is distributed as a Claude Code plugin via the `monet-plugins` marketplace
 
 ## Hooks
 
-Five hooks in `hooks/hooks.json` enforce Taoki tool usage:
+Four hooks in `hooks/hooks.json` guide Taoki tool usage. Designed to avoid alarm fatigue — hooks only fire when there's clear, quantifiable benefit over the default tool:
 
-- **SessionStart (tools reminder):** Injects a decision-tree message at session start guiding Claude to the right tool: radar for exploration, xray for file structure, ripple for impact analysis.
-- **PreToolUse (Read):** When Claude is about to Read a source file (`.rs`, `.py`, `.ts`, `.js`, `.go`, `.java`, etc.), suggests `mcp__taoki__xray` first and `mcp__taoki__ripple` if modifying. Does not block — always allows the Read.
-- **PreToolUse (Glob):** When Claude uses Glob, suggests `mcp__taoki__radar` as an alternative for structural exploration. Does not block.
-- **PreToolUse (Grep):** When Claude uses Grep, suggests `mcp__taoki__xray` or `radar` for structural questions. Does not block.
+- **SessionStart (workflow reminder):** Injects a decision-tree message at session start guiding Claude to the right tool, plus a workflow sequence: radar → xray → Read sections → ripple before modifying.
+- **PreToolUse (Read):** Size-aware — only fires for source files >= 300 lines when no `offset`/`limit` is provided (indicating a full-file read, not a targeted section). Includes the actual line count in the message so the model can weigh the tradeoff. Silent for small files and targeted reads. Does not block.
+- **PreToolUse (Glob):** Pattern-aware — only fires when the glob pattern contains `**` (broad exploration). Silent for targeted lookups like `hooks/*.sh`. Does not block.
 - **PreToolUse (Agent):** When Claude dispatches a subagent for code-related work (general-purpose, Explore, Plan, feature-dev, code-reviewer), reminds to include Taoki MCP tool instructions in the subagent prompt. Does not block.
 
-All hooks use command type (shell scripts) for zero-latency, deterministic behavior. Hook scripts are in `hooks/`.
+All hooks use command type (shell scripts) for zero-latency, deterministic behavior. Hook scripts are in `hooks/`. Error handling: any failure in a hook → silent allow (never disrupts the user).
 
 ## Warning
 

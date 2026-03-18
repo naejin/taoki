@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo 'Structural code intelligence available (taoki plugin):\n- Exploring a new codebase? → radar (no args) for tagged repo overview\n- Understanding a specific file? → xray (structural skeleton with line numbers, 70-90% fewer tokens than reading)\n- About to modify a file? → ripple (what depends on it, with depth for blast radius)\nAlways call radar first when orienting in an unfamiliar repo, then xray on files of interest.'"
+            "command": "echo 'Structural code intelligence available (taoki plugin):\n- Exploring a new codebase? → radar (no args) for tagged repo overview\n- Understanding a specific file? → xray (structural skeleton with line numbers, 70-90% fewer tokens than reading)\n- About to modify a file? → ripple (what depends on it, with depth for blast radius)\nAlways call radar first when orienting in an unfamiliar repo, then xray on files of interest.\n\nWorkflow: radar to orient → xray files of interest → Read specific sections → ripple before modifying'"
           }
         ]
       }
@@ -27,15 +27,6 @@
           {
             "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/check-glob.sh"
-          }
-        ]
-      },
-      {
-        "matcher": "Grep",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/check-grep.sh"
           }
         ]
       },
