@@ -684,7 +684,7 @@ pub fn build_deps_graph(root: &Path, files: &[PathBuf], cache: Option<&DepsGraph
         })
         .collect();
 
-    let fingerprint = crate::cache::compute_fingerprint(&all_files, &crate_map, &go_module_map);
+    let fingerprint = crate::cache::compute_fingerprint(&all_files, &crate_map, &go_module_map, &source_dir_map);
     let fingerprint_changed = cache.is_none_or(|c| c.fingerprint != fingerprint);
 
     let mut graph: HashMap<String, FileImports> = HashMap::new();
