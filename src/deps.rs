@@ -327,11 +327,14 @@ pub fn resolve_import(
     all_files: &[String],
     crate_map: Option<&HashMap<String, PathBuf>>,
     go_module_map: Option<&HashMap<String, PathBuf>>,
+    source_dir_map: Option<&HashMap<String, PathBuf>>,
 ) -> Option<String> {
     match lang {
         Language::Rust => match crate_map {
             Some(map) if !map.is_empty() => {
-                resolve_rust_workspace(import_path, current_file, all_files, map)
+                let empty = HashMap::new();
+                let sdm = source_dir_map.unwrap_or(&empty);
+                resolve_rust_workspace(import_path, current_file, all_files, map, sdm)
             }
             _ => resolve_rust(import_path, all_files),
         },
@@ -376,20 +379,24 @@ fn resolve_rust_workspace(
     current_file: &str,
     all_files: &[String],
     crate_map: &HashMap<String, PathBuf>,
+    source_dir_map: &HashMap<String, PathBuf>,
 ) -> Option<String> {
     if let Some(rest) = import_path.strip_prefix("crate::") {
         // crate:: import — resolve relative to the current file's crate
         let crate_root = find_crate_root(current_file, crate_map);
-        let base = crate_root
-            .map(|(_, dir)| dir.to_path_buf())
-            .unwrap_or_default();
-        resolve_within_crate(rest, &base, all_files)
+        let (crate_name, base) = match crate_root {
+            Some((name, dir)) => (name, dir.to_path_buf()),
+            None => ("", PathBuf::new()),
+        };
+        let source_dir = source_dir_map.get(crate_name).map(|p| p.as_path());
+        resolve_within_crate(rest, &base, all_files, source_dir)
     } else {
         // Try cross-crate: first segment might be a workspace crate
         let first_segment = import_path.split("::").next()?;
         if let Some(dir) = crate_map.get(first_segment) {
             let rest = import_path.strip_prefix(first_segment)?.strip_prefix("::")?;
-            resolve_within_crate(rest, dir, all_files)
+            let source_dir = source_dir_map.get(first_segment).map(|p| p.as_path());
+            resolve_within_crate(rest, dir, all_files, source_dir)
         } else {
             None // External dependency
         }
@@ -399,16 +406,23 @@ fn resolve_rust_workspace(
 /// Resolve a `::` path within a crate's directory.
 /// Tries `{base}/src/{path}.rs`, `{base}/src/{path}/mod.rs`,
 /// `{base}/{path}.rs`, and `{base}/{path}/mod.rs` (for crates not using `src/` layout).
-fn resolve_within_crate(rest: &str, base: &Path, all_files: &[String]) -> Option<String> {
+/// If `source_dir` is provided (custom [[bin]]/[lib] path), those candidates are tried first.
+fn resolve_within_crate(rest: &str, base: &Path, all_files: &[String], source_dir: Option<&Path>) -> Option<String> {
     let parts: Vec<&str> = rest.split("::").collect();
     for take in (1..=parts.len()).rev() {
         let path_str = parts[..take].join("/");
-        let candidates = [
-            base.join("src").join(format!("{path_str}.rs")),
-            base.join("src").join(&path_str).join("mod.rs"),
-            base.join(format!("{path_str}.rs")),
-            base.join(&path_str).join("mod.rs"),
-        ];
+        let mut candidates = Vec::with_capacity(6);
+        // Try source_dir override first (for custom [[bin]]/[lib] paths)
+        if let Some(sd) = source_dir {
+            candidates.push(sd.join(format!("{path_str}.rs")));
+            candidates.push(sd.join(&path_str).join("mod.rs"));
+        }
+        // Standard candidates
+        candidates.push(base.join("src").join(format!("{path_str}.rs")));
+        candidates.push(base.join("src").join(&path_str).join("mod.rs"));
+        candidates.push(base.join(format!("{path_str}.rs")));
+        candidates.push(base.join(&path_str).join("mod.rs"));
+
         for candidate in &candidates {
             let candidate_str = candidate.to_string_lossy().replace('\\', "/");
             if all_files.iter().any(|f| f == &candidate_str) {
@@ -657,7 +671,7 @@ fn normalize_path(path: &Path) -> PathBuf {
 /// and skips tree-sitter parsing. Re-resolves all imports when the file list
 /// or workspace configuration changes (detected via fingerprint).
 pub fn build_deps_graph(root: &Path, files: &[PathBuf], cache: Option<&DepsGraph>) -> DepsGraph {
-    let (crate_map, _source_dir_map) = build_crate_map(root);
+    let (crate_map, source_dir_map) = build_crate_map(root);
     let go_module_map = build_go_module_map(root);
 
     // Build list of relative paths (as strings) for resolution
@@ -709,7 +723,7 @@ pub fn build_deps_graph(root: &Path, files: &[PathBuf], cache: Option<&DepsGraph
             }
             // File list/config changed — re-resolve from cached raw_imports (no tree-sitter)
             let imports = resolve_raw_imports(
-                &cached_entry.raw_imports, lang, &rel, &all_files, &crate_map, &go_module_map,
+                &cached_entry.raw_imports, lang, &rel, &all_files, &crate_map, &go_module_map, &source_dir_map,
             );
             graph.insert(rel, FileImports {
                 content_hash,
@@ -722,7 +736,7 @@ pub fn build_deps_graph(root: &Path, files: &[PathBuf], cache: Option<&DepsGraph
         // Content changed or new file — full extraction + resolution
         let raw_imports = extract_imports(&source, lang);
         let imports = resolve_raw_imports(
-            &raw_imports, lang, &rel, &all_files, &crate_map, &go_module_map,
+            &raw_imports, lang, &rel, &all_files, &crate_map, &go_module_map, &source_dir_map,
         );
 
         graph.insert(rel, FileImports {
@@ -747,6 +761,7 @@ fn resolve_raw_imports(
     all_files: &[String],
     crate_map: &HashMap<String, PathBuf>,
     go_module_map: &HashMap<String, PathBuf>,
+    source_dir_map: &HashMap<String, PathBuf>,
 ) -> Vec<ImportInfo> {
     let mut imports = Vec::new();
     for (import_path, symbols) in raw_imports {
@@ -757,6 +772,7 @@ fn resolve_raw_imports(
             all_files,
             if lang == Language::Rust { Some(crate_map) } else { None },
             if lang == Language::Go { Some(go_module_map) } else { None },
+            if lang == Language::Rust { Some(source_dir_map) } else { None },
         );
         let external = resolved.is_none();
         let path = resolved.unwrap_or_else(|| import_path.clone());
@@ -1118,7 +1134,7 @@ mod tests {
             "src/mcp.rs".to_string(),
         ];
         let result =
-            resolve_import("crate::codemap", Language::Rust, "src/mcp.rs", &all_files, None, None);
+            resolve_import("crate::codemap", Language::Rust, "src/mcp.rs", &all_files, None, None, None);
         assert_eq!(result, Some("src/codemap.rs".to_string()));
     }
 
@@ -1132,6 +1148,7 @@ mod tests {
             &all_files,
             None,
             None,
+            None,
         );
         assert_eq!(result, None);
     }
@@ -1139,7 +1156,7 @@ mod tests {
     #[test]
     fn python_relative_import_resolves() {
         let all_files = vec!["src/auth.py".to_string(), "src/api.py".to_string()];
-        let result = resolve_import(".auth", Language::Python, "src/api.py", &all_files, None, None);
+        let result = resolve_import(".auth", Language::Python, "src/api.py", &all_files, None, None, None);
         assert_eq!(result, Some("src/auth.py".to_string()));
     }
 
@@ -1147,7 +1164,7 @@ mod tests {
     fn ts_relative_import_resolves() {
         let all_files = vec!["src/utils.ts".to_string(), "src/main.ts".to_string()];
         let result =
-            resolve_import("./utils", Language::TypeScript, "src/main.ts", &all_files, None, None);
+            resolve_import("./utils", Language::TypeScript, "src/main.ts", &all_files, None, None, None);
         assert_eq!(result, Some("src/utils.ts".to_string()));
     }
 
@@ -1155,7 +1172,7 @@ mod tests {
     fn ts_bare_import_is_external() {
         let all_files = vec!["src/main.ts".to_string()];
         let result =
-            resolve_import("express", Language::TypeScript, "src/main.ts", &all_files, None, None);
+            resolve_import("express", Language::TypeScript, "src/main.ts", &all_files, None, None, None);
         assert_eq!(result, None);
     }
 
@@ -1181,6 +1198,7 @@ mod tests {
             &all_files,
             None,
             None,
+            None,
         );
         assert_eq!(
             result,
@@ -1192,7 +1210,7 @@ mod tests {
     fn ts_d_ts_resolves() {
         let all_files = vec!["src/types.d.ts".to_string()];
         let result =
-            resolve_import("./types", Language::TypeScript, "src/main.ts", &all_files, None, None);
+            resolve_import("./types", Language::TypeScript, "src/main.ts", &all_files, None, None, None);
         assert_eq!(result, Some("src/types.d.ts".to_string()));
     }
 
@@ -1288,6 +1306,7 @@ mod tests {
             &all_files,
             Some(&crate_map),
             None,
+            None,
         );
         assert_eq!(result, Some("crate-a/src/utils.rs".to_string()));
 
@@ -1299,6 +1318,7 @@ mod tests {
             &all_files,
             Some(&crate_map),
             None,
+            None,
         );
         assert_eq!(result, Some("crate-b/src/types.rs".to_string()));
     }
@@ -1308,7 +1328,7 @@ mod tests {
         let all_files = vec!["src/mcp.rs".to_string(), "src/index/mod.rs".to_string()];
         // No crate map -- single crate
         let result =
-            resolve_import("crate::mcp", Language::Rust, "src/main.rs", &all_files, None, None);
+            resolve_import("crate::mcp", Language::Rust, "src/main.rs", &all_files, None, None, None);
         assert_eq!(result, Some("src/mcp.rs".to_string()));
     }
 
@@ -1322,6 +1342,7 @@ mod tests {
             "src/lib.rs",
             &all_files,
             Some(&crate_map),
+            None,
             None,
         );
         assert_eq!(result, None);
@@ -1342,6 +1363,7 @@ mod tests {
             "src/main.rs",
             &all_files,
             Some(&crate_map),
+            None,
             None,
         );
         assert_eq!(result, Some("src/mcp.rs".to_string()));
@@ -1440,6 +1462,7 @@ mod tests {
             &all_files,
             None,
             None,
+            None,
         );
         assert_eq!(result, Some("canopi/enrichment/merge.py".to_string()));
     }
@@ -1459,6 +1482,7 @@ mod tests {
             &all_files,
             None,
             None,
+            None,
         );
         assert_eq!(result, Some("src/canopi/enrichment/merge.py".to_string()));
     }
@@ -1475,6 +1499,7 @@ mod tests {
             Language::Python,
             "src/canopi/pipeline.py",
             &all_files,
+            None,
             None,
             None,
         );
@@ -1499,6 +1524,7 @@ mod tests {
             &all_files,
             None,
             None,
+            None,
         );
         assert_eq!(result, Some("backend/mypackage/utils.py".to_string()));
     }
@@ -1512,6 +1538,7 @@ mod tests {
             Language::Python,
             "app.py",
             &all_files,
+            None,
             None,
             None,
         );
@@ -1537,6 +1564,7 @@ mod tests {
             &all_files,
             None,
             Some(&module_map),
+            None,
         );
         assert!(
             result == Some("pkg/parser/parser.go".to_string())
@@ -1560,6 +1588,7 @@ mod tests {
             &all_files,
             None,
             Some(&module_map),
+            None,
         );
         assert_eq!(result, None);
     }
@@ -1583,6 +1612,7 @@ mod tests {
             &all_files,
             None,
             Some(&module_map),
+            None,
         );
         assert_eq!(
             result,
@@ -1796,6 +1826,7 @@ mod tests {
             &all_files,
             None,
             None,
+            None,
         );
         assert_eq!(
             result,
@@ -1818,6 +1849,7 @@ mod tests {
             &all_files,
             None,
             None,
+            None,
         );
         assert_eq!(
             result,
@@ -1837,6 +1869,7 @@ mod tests {
             &all_files,
             None,
             None,
+            None,
         );
         assert_eq!(
             result,
@@ -1853,6 +1886,7 @@ mod tests {
             Language::Java,
             "src/com/example/App.java",
             &all_files,
+            None,
             None,
             None,
         );
@@ -1874,6 +1908,7 @@ mod tests {
             Language::Java,
             "src/main/java/org/springframework/boot/autoconfigure/App.java",
             &all_files,
+            None,
             None,
             None,
         );
@@ -1898,6 +1933,7 @@ mod tests {
             &all_files,
             None,
             None,
+            None,
         );
         assert_eq!(result, None, "should not match across word boundaries");
     }
@@ -1910,6 +1946,7 @@ mod tests {
             Language::Java,
             "com/example/Bar.java",
             &all_files,
+            None,
             None,
             None,
         );
@@ -2007,5 +2044,77 @@ name = "mybin"
             Some("crates/core".to_string()),
             "source_dir_map should detect custom source dir from [[bin]] path"
         );
+    }
+
+    #[test]
+    fn resolve_rust_custom_bin_path() {
+        let all_files = vec![
+            "crates/core/main.rs".to_string(),
+            "crates/core/flags/mod.rs".to_string(),
+            "crates/core/flags/lowargs.rs".to_string(),
+            "crates/core/haystack.rs".to_string(),
+        ];
+        let mut crate_map = HashMap::new();
+        crate_map.insert("ripgrep".to_string(), PathBuf::from(""));
+        let mut source_dir_map = HashMap::new();
+        source_dir_map.insert("ripgrep".to_string(), PathBuf::from("crates/core"));
+
+        let result = resolve_import(
+            "crate::flags::lowargs",
+            Language::Rust,
+            "crates/core/main.rs",
+            &all_files,
+            Some(&crate_map),
+            None,
+            Some(&source_dir_map),
+        );
+        assert_eq!(
+            result,
+            Some("crates/core/flags/lowargs.rs".to_string()),
+            "should resolve crate:: imports via source_dir_map"
+        );
+    }
+
+    #[test]
+    fn resolve_rust_custom_bin_path_mod_rs() {
+        let all_files = vec![
+            "crates/core/main.rs".to_string(),
+            "crates/core/flags/mod.rs".to_string(),
+        ];
+        let mut crate_map = HashMap::new();
+        crate_map.insert("ripgrep".to_string(), PathBuf::from(""));
+        let mut source_dir_map = HashMap::new();
+        source_dir_map.insert("ripgrep".to_string(), PathBuf::from("crates/core"));
+
+        let result = resolve_import(
+            "crate::flags",
+            Language::Rust,
+            "crates/core/main.rs",
+            &all_files,
+            Some(&crate_map),
+            None,
+            Some(&source_dir_map),
+        );
+        assert_eq!(result, Some("crates/core/flags/mod.rs".to_string()));
+    }
+
+    #[test]
+    fn resolve_rust_standard_layout_with_source_dir_map() {
+        let all_files = vec![
+            "src/lib.rs".to_string(),
+            "src/utils.rs".to_string(),
+        ];
+        let crate_map = HashMap::new();
+        let source_dir_map = HashMap::new();
+        let result = resolve_import(
+            "crate::utils",
+            Language::Rust,
+            "src/lib.rs",
+            &all_files,
+            Some(&crate_map),
+            None,
+            Some(&source_dir_map),
+        );
+        assert_eq!(result, Some("src/utils.rs".to_string()));
     }
 }
