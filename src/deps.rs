@@ -636,8 +636,11 @@ fn normalize_path(path: &Path) -> PathBuf {
 }
 
 /// Build a dependency graph from a list of files under `root`.
-pub fn build_deps_graph(root: &Path, files: &[PathBuf]) -> DepsGraph {
-    let mut graph: HashMap<String, FileImports> = HashMap::new();
+/// Build a dependency graph from a list of files under `root`.
+/// If `cache` is provided, reuses extraction results for unchanged files
+/// and skips tree-sitter parsing. Re-resolves all imports when the file list
+/// or workspace configuration changes (detected via fingerprint).
+pub fn build_deps_graph(root: &Path, files: &[PathBuf], cache: Option<&DepsGraph>) -> DepsGraph {
     let crate_map = build_crate_map(root);
     let go_module_map = build_go_module_map(root);
 
@@ -650,6 +653,11 @@ pub fn build_deps_graph(root: &Path, files: &[PathBuf]) -> DepsGraph {
                 .map(|rel| rel.to_string_lossy().replace('\\', "/"))
         })
         .collect();
+
+    let fingerprint = crate::cache::compute_fingerprint(&all_files, &crate_map, &go_module_map);
+    let fingerprint_changed = cache.is_none_or(|c| c.fingerprint != fingerprint);
+
+    let mut graph: HashMap<String, FileImports> = HashMap::new();
 
     for file_path in files {
         let rel = match file_path.strip_prefix(root) {
@@ -671,39 +679,78 @@ pub fn build_deps_graph(root: &Path, files: &[PathBuf]) -> DepsGraph {
             Err(_) => continue,
         };
 
-        let raw_imports = extract_imports(&source, lang);
-        let mut imports = Vec::new();
+        let content_hash = blake3::hash(&source).to_hex().to_string();
 
-        for (import_path, symbols) in raw_imports {
-            let resolved = resolve_import(
-                &import_path,
-                lang,
-                &rel,
-                &all_files,
-                if lang == Language::Rust { Some(&crate_map) } else { None },
-                if lang == Language::Go { Some(&go_module_map) } else { None },
+        // Check if we can reuse cached data for this file
+        if let Some(cached_entry) = cache
+            .and_then(|c| c.graph.get(&rel))
+            .filter(|entry| entry.content_hash == content_hash)
+        {
+            if !fingerprint_changed {
+                // Nothing changed at all — reuse everything
+                graph.insert(rel, cached_entry.clone());
+                continue;
+            }
+            // File list/config changed — re-resolve from cached raw_imports (no tree-sitter)
+            let imports = resolve_raw_imports(
+                &cached_entry.raw_imports, lang, &rel, &all_files, &crate_map, &go_module_map,
             );
-            let external = resolved.is_none();
-            let path = resolved.unwrap_or_else(|| import_path.clone());
-            imports.push(ImportInfo {
-                path,
-                symbols,
-                external,
+            graph.insert(rel, FileImports {
+                content_hash,
+                raw_imports: cached_entry.raw_imports.clone(),
+                imports,
             });
+            continue;
         }
 
+        // Content changed or new file — full extraction + resolution
+        let raw_imports = extract_imports(&source, lang);
+        let imports = resolve_raw_imports(
+            &raw_imports, lang, &rel, &all_files, &crate_map, &go_module_map,
+        );
+
         graph.insert(rel, FileImports {
-            content_hash: String::new(),
-            raw_imports: Vec::new(),
+            content_hash,
+            raw_imports,
             imports,
         });
     }
 
     DepsGraph {
         version: CACHE_VERSION,
-        fingerprint: String::new(),
+        fingerprint,
         graph,
     }
+}
+
+/// Resolve a list of raw imports to ImportInfo entries.
+fn resolve_raw_imports(
+    raw_imports: &[(String, Vec<String>)],
+    lang: Language,
+    current_file: &str,
+    all_files: &[String],
+    crate_map: &HashMap<String, PathBuf>,
+    go_module_map: &HashMap<String, PathBuf>,
+) -> Vec<ImportInfo> {
+    let mut imports = Vec::new();
+    for (import_path, symbols) in raw_imports {
+        let resolved = resolve_import(
+            import_path,
+            lang,
+            current_file,
+            all_files,
+            if lang == Language::Rust { Some(crate_map) } else { None },
+            if lang == Language::Go { Some(go_module_map) } else { None },
+        );
+        let external = resolved.is_none();
+        let path = resolved.unwrap_or_else(|| import_path.clone());
+        imports.push(ImportInfo {
+            path,
+            symbols: symbols.clone(),
+            external,
+        });
+    }
+    imports
 }
 
 fn format_symbols(symbols: &[String]) -> String {
@@ -1272,7 +1319,7 @@ mod tests {
         fs::write(src.join("helper.rs"), "pub fn run() {}\n").unwrap();
 
         let files = vec![src.join("main.rs"), src.join("helper.rs")];
-        let graph = build_deps_graph(dir.path(), &files);
+        let graph = build_deps_graph(dir.path(), &files, None);
 
         let main_deps = query_deps(&graph, "src/main.rs", 1);
         assert!(
@@ -1580,5 +1627,75 @@ mod tests {
         assert!(out.contains("... +4 more"), "should truncate long symbol list: {out}");
         assert!(out.contains("Type1"), "should show first symbols: {out}");
         assert!(!out.contains("Type7"), "should not show symbols past threshold: {out}");
+    }
+
+    #[test]
+    fn build_deps_graph_incremental_reuses_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("main.rs"), "use crate::helper;\nfn main() {}\n").unwrap();
+        fs::write(src.join("helper.rs"), "pub fn run() {}\n").unwrap();
+
+        let files = vec![src.join("main.rs"), src.join("helper.rs")];
+
+        // Build from scratch
+        let graph1 = build_deps_graph(dir.path(), &files, None);
+        assert!(!graph1.fingerprint.is_empty(), "should have fingerprint");
+
+        // Build again with cache — should produce identical result
+        let graph2 = build_deps_graph(dir.path(), &files, Some(&graph1));
+        assert_eq!(graph1.fingerprint, graph2.fingerprint);
+        assert_eq!(graph1.graph.len(), graph2.graph.len());
+
+        // Verify content hashes are populated
+        for (_, fi) in &graph2.graph {
+            assert!(!fi.content_hash.is_empty(), "content_hash should be populated");
+        }
+    }
+
+    #[test]
+    fn build_deps_graph_detects_new_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("main.rs"), "use crate::helper;\nfn main() {}\n").unwrap();
+        fs::write(src.join("helper.rs"), "pub fn run() {}\n").unwrap();
+
+        let files1 = vec![src.join("main.rs"), src.join("helper.rs")];
+        let graph1 = build_deps_graph(dir.path(), &files1, None);
+
+        // Add a new file
+        fs::write(src.join("utils.rs"), "pub fn util() {}\n").unwrap();
+        let files2 = vec![src.join("main.rs"), src.join("helper.rs"), src.join("utils.rs")];
+        let graph2 = build_deps_graph(dir.path(), &files2, Some(&graph1));
+
+        assert_ne!(graph1.fingerprint, graph2.fingerprint, "fingerprint should change");
+        assert_eq!(graph2.graph.len(), 3, "new file should be in graph");
+        assert!(graph2.graph.contains_key("src/utils.rs"));
+    }
+
+    #[test]
+    fn build_deps_graph_detects_content_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("main.rs"), "fn main() {}\n").unwrap();
+        fs::write(src.join("helper.rs"), "pub fn run() {}\n").unwrap();
+
+        let files = vec![src.join("main.rs"), src.join("helper.rs")];
+        let graph1 = build_deps_graph(dir.path(), &files, None);
+
+        // main.rs now imports helper
+        fs::write(src.join("main.rs"), "use crate::helper;\nfn main() {}\n").unwrap();
+        let graph2 = build_deps_graph(dir.path(), &files, Some(&graph1));
+
+        // Fingerprint unchanged (same files), but main.rs should have new imports
+        assert_eq!(graph1.fingerprint, graph2.fingerprint, "same files = same fingerprint");
+        let main_imports = &graph2.graph["src/main.rs"].imports;
+        assert!(
+            main_imports.iter().any(|i| i.path == "src/helper.rs" && !i.external),
+            "should pick up new import: {main_imports:?}"
+        );
     }
 }

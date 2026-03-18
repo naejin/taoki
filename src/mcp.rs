@@ -592,7 +592,7 @@ fn call_ripple(args: &Value) -> ToolResult {
                     };
                 }
             };
-            let g = crate::deps::build_deps_graph(root, &files);
+            let g = crate::deps::build_deps_graph(root, &files, None);
             crate::deps::save_deps_cache(root, &g);
             g
         }

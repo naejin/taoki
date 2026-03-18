@@ -447,7 +447,7 @@ pub fn build_code_map(root: &Path, globs: &[String]) -> Result<String, CodeMapEr
     // Build and cache dependency graph alongside code map
     // Note: This rebuilds the full graph on every code_map call. Per-file incremental
     // updates (skip unchanged files) is a Phase 2 optimization.
-    let graph = crate::deps::build_deps_graph(root, &files);
+    let graph = crate::deps::build_deps_graph(root, &files, None);
     crate::deps::save_deps_cache(root, &graph);
 
     // Sort by path and format output
