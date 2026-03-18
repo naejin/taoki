@@ -830,6 +830,15 @@ public enum Direction {
     }
 
     #[test]
+    fn extract_public_api_matches_extract_all() {
+        let src = b"pub struct Foo;\npub fn bar() {}\nfn private() {}\n";
+        let (api, _skeleton) = extract_all(src, Language::Rust).unwrap();
+        let (types, fns) = extract_public_api(src, Language::Rust).unwrap();
+        assert_eq!(api.types, types);
+        assert_eq!(api.functions, fns);
+    }
+
+    #[test]
     fn python_all_sections() {
         let src = "\
 \"\"\"Module docstring.\"\"\"

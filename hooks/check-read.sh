@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PreToolUse hook for Read — nudges toward mcp__taoki__index for source files.
+# PreToolUse hook for Read — nudges toward mcp__taoki__xray for source files.
 # Reads tool input JSON from stdin, checks file extension, outputs hook response.
 # Always allows the operation — never blocks.
 
@@ -16,7 +16,7 @@ EXT="${FILE_PATH##*.}"
 case "$EXT" in
   rs|py|pyi|ts|tsx|js|jsx|mjs|cjs|go|java)
     cat <<'EOF'
-{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","additionalContext":"Consider calling mcp__taoki__index on this file first to get its structure with line numbers, then Read only the specific sections you need. For multiple files at once, mcp__taoki__code_map with files: [\"path1\", \"path2\"] returns all skeletons in one call. This typically saves 70-90% of tokens."}}
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","additionalContext":"Consider calling mcp__taoki__xray on this file first to get its structure with line numbers, then Read only the sections you need. If you're about to modify this file, mcp__taoki__ripple shows what depends on it."}}
 EOF
     ;;
   *)

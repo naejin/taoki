@@ -7,7 +7,7 @@
 
 ## Demo
 
-**`code_map`** — one-line-per-file summary with heuristic tags:
+**`radar`** — one-line-per-file summary with heuristic tags:
 
 ```
 src/codemap.rs (537 lines) [error-types]
@@ -23,7 +23,7 @@ src/mcp.rs (479 lines) [error-types]
   public_functions: tool_definitions(), handle_request(...)
 ```
 
-**`index`** — structural skeleton with line numbers and body insights:
+**`xray`** — structural skeleton with line numbers and body insights:
 
 ```
 imports: [1-3]
@@ -48,11 +48,11 @@ fns:
     → errors: 3× ?
 ```
 
-**`dependencies`** — cross-file import/export graph:
+**`ripple`** — cross-file import/export graph with symbols:
 
 ```
 depends_on:
-  src/index/mod.rs
+  src/index/mod.rs (Language, find_child, node_text)
 used_by:
   src/codemap.rs
 external:
@@ -64,9 +64,10 @@ external:
 
 ## Features
 
-- **Three tools** — `code_map` (repo overview), `index` (file skeleton), `dependencies` (import graph)
+- **Three tools** — `radar` (repo overview), `xray` (file skeleton), `ripple` (import graph with depth)
 - **70–90% fewer tokens** — Claude reads structure, not source, then targets specific line ranges
 - **Heuristic tags** — files auto-tagged as `[entry-point]`, `[tests]`, `[error-types]`, `[data-models]`, `[module-root]`, and more
+- **Blast radius** — `ripple` shows transitive dependents with `depth=2` or `depth=3`, symbols shown inline
 - **Docstring extraction** — first line of doc comments (`///`, `/** */`, Python docstrings) shown inline as `/// summary`
 - **Body insights** — functions show `→ calls:` (free/scoped), `→ methods:` (with receiver context like `client.get`), `→ match:` (switch arms), and `→ errors:` (error sites). Calls and methods are separated: domain orchestration vs plumbing, so the signal is always visible first
 - **Test collapsing** — test code detected and collapsed across all supported languages
@@ -121,19 +122,19 @@ Once installed, Claude automatically has access to the three tools. Use them thr
 
 | You say | Claude calls |
 |---------|-------------|
-| "Map the codebase" | `code_map` |
-| "Show me the structure of src/auth.ts" | `index` |
-| "What depends on this file?" | `dependencies` |
-| "Map just the API routes" | `code_map` with globs |
+| "Map the codebase" | `radar` |
+| "Show me the structure of src/auth.ts" | `xray` |
+| "What depends on this file?" | `ripple` |
+| "Map just the API routes" | `radar` with globs |
 
 ### Typical workflow
 
 ```
-1. code_map     → understand architecture, find relevant files by [tags]
-2. dependencies → check impact via used_by before modifying anything
-3. index        → get structural skeleton with line numbers
-4. Read         → read only the specific line ranges you need
-5. Edit         → make targeted changes with full context
+1. radar  → understand architecture, find relevant files by [tags]
+2. ripple → check impact via used_by before modifying anything
+3. xray   → get structural skeleton with line numbers
+4. Read   → read only the specific line ranges you need
+5. Edit   → make targeted changes with full context
 ```
 
 ## Supported Languages
@@ -151,9 +152,9 @@ Once installed, Claude automatically has access to the three tools. Use them thr
 
 Taoki runs as an [MCP](https://modelcontextprotocol.io/) server over stdio. When Claude starts a session, it can call the three tools at any time:
 
-- **`code_map`** walks the repo (respecting `.gitignore`), hashes each file with [blake3](https://github.com/BLAKE3-team/BLAKE3), and extracts public API summaries using [tree-sitter](https://tree-sitter.github.io/). Results cached at `.cache/taoki/code-map.json`.
-- **`index`** parses a single file and returns its structural skeleton. The first line of doc comments is extracted and shown inline (`/// summary`), giving agents intent/contract information without reading source. Function and method bodies are analyzed to show call graphs, match/switch arms, and error return sites as `→` insight lines. Test code is automatically detected and collapsed — Python (`test_*`, `Test*`), Go (`Test*`, `Benchmark*`), TypeScript/JS (`describe`, `it`, `test`), Rust (`#[test]`, `#[cfg(test)]`). Files matching test naming patterns are collapsed entirely.
-- **`dependencies`** queries a cached dependency graph (`.cache/taoki/deps.json`) showing internal imports, reverse dependencies, and external packages.
+- **`radar`** walks the repo (respecting `.gitignore`), hashes each file with [blake3](https://github.com/BLAKE3-team/BLAKE3), and extracts public API summaries using [tree-sitter](https://tree-sitter.github.io/). Results cached at `.cache/taoki/radar.json`. Large repos (>100 files) get directory-grouped output. Long API lists are truncated with xray cue.
+- **`xray`** parses a single file and returns its structural skeleton. The first line of doc comments is extracted and shown inline (`/// summary`), giving agents intent/contract information without reading source. Function and method bodies are analyzed to show call graphs, match/switch arms, and error return sites as `→` insight lines. Test code is automatically detected and collapsed — Python (`test_*`, `Test*`), Go (`Test*`, `Benchmark*`), TypeScript/JS (`describe`, `it`, `test`), Rust (`#[test]`, `#[cfg(test)]`). Files matching test naming patterns are collapsed entirely. Results cached on disk at `.cache/taoki/xray.json`.
+- **`ripple`** queries a cached dependency graph (`.cache/taoki/deps.json`) showing internal imports with symbols, reverse dependencies with depth expansion (1-3 levels), and external packages. Cycle detection prevents infinite loops.
 
 ## Caching
 

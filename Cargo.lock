@@ -688,7 +688,7 @@ dependencies = [
 
 [[package]]
 name = "taoki"
-version = "0.9.10"
+version = "1.0.0"
 dependencies = [
  "blake3",
  "criterion",

@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo 'You have structural code intelligence tools available via the taoki plugin. Before reading source files, use: mcp__taoki__code_map (repo overview with tags — call with no args first, then pass files: [...] to get full skeletons for files of interest), mcp__taoki__index (single file skeleton with line numbers — 70-90% fewer tokens than reading), mcp__taoki__dependencies (import/export graph for impact analysis). Always call code_map first when exploring a codebase. When you need structure for multiple files, use code_map with the files parameter instead of calling index on each one separately.'"
+            "command": "echo 'Structural code intelligence available (taoki plugin):\n- Exploring a new codebase? → radar (no args) for tagged repo overview\n- Understanding a specific file? → xray (structural skeleton with line numbers, 70-90% fewer tokens than reading)\n- About to modify a file? → ripple (what depends on it, with depth for blast radius)\nAlways call radar first when orienting in an unfamiliar repo, then xray on files of interest.'"
           }
         ]
       }

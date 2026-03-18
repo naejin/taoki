@@ -28,15 +28,17 @@ struct CacheEntry {
     lines: usize,
     public_types: Vec<String>,
     public_functions: Vec<String>,
-    #[serde(default)]
     tags: Vec<String>,
-    #[serde(default)]
-    skeleton: String,
 }
 
-const CACHE_VERSION: u32 = 6;
+const CACHE_VERSION: u32 = 1;
 const CACHE_DIR: &str = ".cache/taoki";
-const CACHE_FILE: &str = "code-map.json";
+const CACHE_FILE: &str = "radar.json";
+const GROUPING_THRESHOLD: usize = 100;
+const FN_TRUNCATE_THRESHOLD: usize = 8;
+const TYPE_TRUNCATE_THRESHOLD: usize = 12;
+const FN_TRUNCATE_SHOW: usize = 6;
+const TYPE_TRUNCATE_SHOW: usize = 10;
 
 struct FileResult {
     path: String,
@@ -337,45 +339,7 @@ fn compute_tags(
     tags
 }
 
-/// Batch skeleton mode: return skeletons only for the listed files, no overview.
-fn build_batch_skeletons(root: &Path, detail_files: &[String]) -> Result<String, CodeMapError> {
-    let mut out = String::new();
-    for file_path in detail_files {
-        let normalized = file_path.replace('\\', "/");
-        let normalized = normalized.strip_prefix("./").unwrap_or(&normalized);
-        let abs_path = root.join(normalized);
-
-        let ext = abs_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        let Some(lang) = Language::from_extension(ext) else {
-            continue;
-        };
-        let source = match std::fs::read(&abs_path) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        let is_test = crate::mcp::is_test_filename(&abs_path);
-        let skeleton = if is_test {
-            let lines = source.iter().filter(|&&b| b == b'\n').count() + 1;
-            format!("tests: [1-{lines}]\n")
-        } else {
-            match index::index_source(&source, lang) {
-                Ok(s) => s,
-                Err(_) => continue,
-            }
-        };
-        out.push_str(&format!("# {normalized}\n"));
-        out.push_str(&skeleton);
-        out.push('\n');
-    }
-    Ok(out)
-}
-
-pub fn build_code_map(root: &Path, globs: &[String], detail_files: &[String]) -> Result<String, CodeMapError> {
-    // When files are requested, return skeletons only — no overview, no repo walk.
-    if !detail_files.is_empty() {
-        return build_batch_skeletons(root, detail_files);
-    }
-
+pub fn build_code_map(root: &Path, globs: &[String]) -> Result<String, CodeMapError> {
     let files = walk_files(root, globs)?;
     let mut cache = load_cache(root);
 
@@ -419,7 +383,6 @@ pub fn build_code_map(root: &Path, globs: &[String], detail_files: &[String]) ->
                     public_types: cached.public_types.clone(),
                     public_functions: cached.public_functions.clone(),
                     tags: cached.tags.clone(),
-                    skeleton: cached.skeleton.clone(),
                 });
                 continue;
             }
@@ -438,19 +401,9 @@ pub fn build_code_map(root: &Path, globs: &[String], detail_files: &[String]) ->
 
         let lines = source.iter().filter(|&&b| b == b'\n').count() + 1;
 
-        // Check if test file — collapse skeleton but still extract public API
-        let is_test = crate::mcp::is_test_filename(file_path);
-
-        let (public_types, public_functions, skeleton) =
-            match index::extract_all(&source, lang) {
-                Ok((api, skel)) => {
-                    let final_skeleton = if is_test {
-                        format!("tests: [1-{}]\n", lines)
-                    } else {
-                        skel
-                    };
-                    (api.types, api.functions, final_skeleton)
-                }
+        let (public_types, public_functions) =
+            match index::extract_public_api(&source, lang) {
+                Ok((types, fns)) => (types, fns),
                 Err(_) => {
                     results.push(FileResult {
                         path: rel.clone(),
@@ -474,7 +427,6 @@ pub fn build_code_map(root: &Path, globs: &[String], detail_files: &[String]) ->
                 public_types: public_types.clone(),
                 public_functions: public_functions.clone(),
                 tags: tags.clone(),
-                skeleton: skeleton.clone(),
             },
         );
 
@@ -501,8 +453,40 @@ pub fn build_code_map(root: &Path, globs: &[String], detail_files: &[String]) ->
     // Sort by path and format output
     results.sort_by(|a, b| a.path.cmp(&b.path));
 
+    let out = if results.len() > GROUPING_THRESHOLD {
+        format_grouped(&results)
+    } else {
+        format_flat(&results)
+    };
+
+    Ok(out)
+}
+
+fn truncate_list(items: &[String], threshold: usize, show: usize) -> (Vec<String>, usize) {
+    if items.len() > threshold {
+        let shown: Vec<String> = items[..show].to_vec();
+        let remaining = items.len() - show;
+        (shown, remaining)
+    } else {
+        (items.to_vec(), 0)
+    }
+}
+
+fn format_names_only(items: &[String]) -> Vec<String> {
+    items.iter().map(|s| {
+        s.split(['(', ':'])
+         .next()
+         .unwrap_or(s)
+         .split_whitespace()
+         .last()
+         .unwrap_or(s)
+         .to_string()
+    }).collect()
+}
+
+fn format_flat(results: &[FileResult]) -> String {
     let mut out = String::new();
-    for fr in &results {
+    for fr in results {
         if fr.parse_error {
             out.push_str(&format!("- {} ({} lines) (parse error)\n", fr.path, fr.lines));
             continue;
@@ -512,27 +496,102 @@ pub fn build_code_map(root: &Path, globs: &[String], detail_files: &[String]) ->
         } else {
             format!(" {}", fr.tags.iter().map(|t| format!("[{t}]")).collect::<Vec<_>>().join(" "))
         };
-        let types_str = if fr.public_types.is_empty() {
+
+        let (shown_types, more_types) = truncate_list(&fr.public_types, TYPE_TRUNCATE_THRESHOLD, TYPE_TRUNCATE_SHOW);
+        let (shown_fns, more_fns) = truncate_list(&fr.public_functions, FN_TRUNCATE_THRESHOLD, FN_TRUNCATE_SHOW);
+
+        let types_str = if shown_types.is_empty() {
             "(none)".to_string()
         } else {
-            fr.public_types.join(", ")
+            let mut s = shown_types.join(", ");
+            if more_types > 0 {
+                s.push_str(&format!(", ... +{more_types} more (use xray for full list)"));
+            }
+            s
         };
-        let fns_str = if fr.public_functions.is_empty() {
+        let fns_str = if shown_fns.is_empty() {
             "(none)".to_string()
         } else {
-            fr.public_functions
-                .iter()
+            let mut s = shown_fns.iter()
                 .map(|f| f.split_whitespace().collect::<Vec<_>>().join(" "))
                 .collect::<Vec<_>>()
-                .join(", ")
+                .join(", ");
+            if more_fns > 0 {
+                s.push_str(&format!(", ... +{more_fns} more (use xray for full list)"));
+            }
+            s
         };
+
         out.push_str(&format!(
             "- {} ({} lines){tags_str} - public_types: {types_str} - public_functions: {fns_str}\n",
             fr.path, fr.lines
         ));
     }
+    out
+}
 
-    Ok(out)
+fn format_grouped(results: &[FileResult]) -> String {
+    let mut out = String::new();
+
+    // Group by directory
+    let mut groups: Vec<(String, Vec<&FileResult>)> = Vec::new();
+    let mut current_dir = String::new();
+    let mut current_files: Vec<&FileResult> = Vec::new();
+
+    for fr in results {
+        let dir = match fr.path.rfind('/') {
+            Some(pos) => &fr.path[..=pos],
+            None => "(root)/",
+        };
+        if dir != current_dir {
+            if !current_files.is_empty() {
+                groups.push((current_dir.clone(), std::mem::take(&mut current_files)));
+            }
+            current_dir = dir.to_string();
+        }
+        current_files.push(fr);
+    }
+    if !current_files.is_empty() {
+        groups.push((current_dir, current_files));
+    }
+
+    for (dir, files) in &groups {
+        let total_lines: usize = files.iter().map(|f| f.lines).sum();
+        out.push_str(&format!("{dir} ({} files, {} lines)\n", files.len(), total_lines));
+
+        for fr in files {
+            let filename = fr.path.rsplit('/').next().unwrap_or(&fr.path);
+            let tags_str = if fr.tags.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", fr.tags.iter().map(|t| format!("[{t}]")).collect::<Vec<_>>().join(" "))
+            };
+
+            // Name-only API
+            let type_names = format_names_only(&fr.public_types);
+            let fn_names = format_names_only(&fr.public_functions);
+            let mut all_names: Vec<String> = Vec::new();
+
+            let (shown_types, more_types) = truncate_list(&type_names, TYPE_TRUNCATE_THRESHOLD, TYPE_TRUNCATE_SHOW);
+            all_names.extend(shown_types);
+            if more_types > 0 {
+                all_names.push(format!("... +{more_types} more types"));
+            }
+
+            let (shown_fns, more_fns) = truncate_list(&fn_names, FN_TRUNCATE_THRESHOLD, FN_TRUNCATE_SHOW);
+            all_names.extend(shown_fns);
+            if more_fns > 0 {
+                all_names.push(format!("... +{more_fns} more fns (use xray for full list)"));
+            }
+
+            if all_names.is_empty() {
+                out.push_str(&format!("  {filename} ({} lines){tags_str}\n", fr.lines));
+            } else {
+                out.push_str(&format!("  {filename} ({} lines){tags_str} - {}\n", fr.lines, all_names.join(", ")));
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -546,7 +605,7 @@ mod tests {
         let file = dir.path().join("lib.rs");
         fs::write(&file, "pub struct Foo {}\npub fn bar() {}\nfn private() {}\n").unwrap();
 
-        let result = build_code_map(dir.path(), &[], &[]).unwrap();
+        let result = build_code_map(dir.path(), &[]).unwrap();
         assert!(result.contains("lib.rs"));
         assert!(result.contains("Foo"));
         assert!(result.contains("bar()"));
@@ -560,16 +619,16 @@ mod tests {
         fs::write(&file, "pub struct Foo {}\n").unwrap();
 
         // First call — builds cache
-        let r1 = build_code_map(dir.path(), &[], &[]).unwrap();
-        assert!(dir.path().join(".cache/taoki/code-map.json").exists());
+        let r1 = build_code_map(dir.path(), &[]).unwrap();
+        assert!(dir.path().join(".cache/taoki/radar.json").exists());
 
         // Second call — uses cache (same result)
-        let r2 = build_code_map(dir.path(), &[], &[]).unwrap();
+        let r2 = build_code_map(dir.path(), &[]).unwrap();
         assert_eq!(r1, r2);
 
         // Modify file — cache miss
         fs::write(&file, "pub struct Bar {}\n").unwrap();
-        let r3 = build_code_map(dir.path(), &[], &[]).unwrap();
+        let r3 = build_code_map(dir.path(), &[]).unwrap();
         assert!(r3.contains("Bar"));
         assert!(!r3.contains("Foo"));
     }
@@ -580,7 +639,7 @@ mod tests {
         let file = dir.path().join("main.rs");
         fs::write(&file, "fn main() {}\n").unwrap();
 
-        let result = build_code_map(dir.path(), &[], &[]).unwrap();
+        let result = build_code_map(dir.path(), &[]).unwrap();
         assert!(result.contains("[entry-point]"), "missing entry-point tag in:\n{result}");
     }
 
@@ -590,7 +649,7 @@ mod tests {
         let file = dir.path().join("test_auth.py");
         fs::write(&file, "def test_login():\n    pass\n").unwrap();
 
-        let result = build_code_map(dir.path(), &[], &[]).unwrap();
+        let result = build_code_map(dir.path(), &[]).unwrap();
         assert!(result.contains("[tests]"), "missing tests tag in:\n{result}");
     }
 
@@ -602,7 +661,7 @@ mod tests {
         let file = sub.join("mod.rs");
         fs::write(&file, "pub fn foo() {}\n").unwrap();
 
-        let result = build_code_map(dir.path(), &[], &[]).unwrap();
+        let result = build_code_map(dir.path(), &[]).unwrap();
         assert!(result.contains("[module-root]"), "missing module-root tag in:\n{result}");
     }
 
@@ -612,100 +671,17 @@ mod tests {
         let file = dir.path().join("errors.rs");
         fs::write(&file, "pub enum MyError { Io, Parse }\n").unwrap();
 
-        let result = build_code_map(dir.path(), &[], &[]).unwrap();
+        let result = build_code_map(dir.path(), &[]).unwrap();
         assert!(result.contains("[error-types]"), "missing error-types tag in:\n{result}");
-    }
-
-    #[test]
-    fn cache_stores_skeleton() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("lib.rs");
-        fs::write(&file, "pub struct Foo {}\npub fn bar() {}\n").unwrap();
-
-        // First call: parses and caches
-        let result = build_code_map(dir.path(), &[], &[]).unwrap();
-        assert!(!result.contains("[skeleton]"));
-
-        // Verify cache contains skeleton
-        let cache_path = dir.path().join(".cache/taoki/code-map.json");
-        let cache_data: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&cache_path).unwrap()).unwrap();
-        let skeleton = cache_data["files"]["lib.rs"]["skeleton"].as_str().unwrap();
-        assert!(skeleton.contains("types:"));
-        assert!(skeleton.contains("Foo"));
-        assert!(skeleton.contains("fns:"));
-        assert!(skeleton.contains("bar()"));
-    }
-
-    #[test]
-    fn code_map_with_files_returns_skeleton_only() {
-        let dir = tempfile::tempdir().unwrap();
-        let src_dir = dir.path().join("src");
-        fs::create_dir(&src_dir).unwrap();
-        fs::write(src_dir.join("lib.rs"), "pub struct Foo {}\npub fn bar() {}\n").unwrap();
-        fs::write(src_dir.join("main.rs"), "fn main() {}\n").unwrap();
-
-        let result = build_code_map(dir.path(), &[], &["src/lib.rs".to_string()]).unwrap();
-
-        // Batch mode: lib.rs skeleton present with file header
-        assert!(result.contains("# src/lib.rs"), "should have file header:\n{result}");
-        assert!(result.contains("Foo"), "should contain type:\n{result}");
-        assert!(result.contains("bar()"), "should contain fn:\n{result}");
-
-        // No overview — main.rs must not appear at all
-        assert!(!result.contains("main.rs"), "overview must be absent in batch mode:\n{result}");
-    }
-
-    #[test]
-    fn code_map_files_normalizes_dot_slash_prefix() {
-        let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("lib.rs"), "pub fn hello() {}\n").unwrap();
-
-        let result = build_code_map(dir.path(), &[], &["./lib.rs".to_string()]).unwrap();
-        assert!(result.contains("# lib.rs"), "should match with ./ prefix:\n{result}");
-        assert!(result.contains("hello()"), "should contain fn signature:\n{result}");
     }
 
     #[test]
     fn code_map_overview_has_no_file_headers() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("lib.rs"), "pub fn hello() {}\n").unwrap();
-        let result = build_code_map(dir.path(), &[], &[]).unwrap();
+        let result = build_code_map(dir.path(), &[]).unwrap();
         assert!(!result.contains("# lib.rs"), "overview should not have file headers:\n{result}");
         assert!(result.contains("lib.rs"), "overview should list file in one-liner:\n{result}");
-    }
-
-    #[test]
-    fn code_map_files_ignores_nonexistent() {
-        let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("lib.rs"), "pub fn hello() {}\n").unwrap();
-        let result = build_code_map(dir.path(), &[], &["nonexistent.rs".to_string()]).unwrap();
-        assert!(!result.contains("nonexistent.rs"), "nonexistent file should be skipped:\n{result}");
-    }
-
-    #[test]
-    fn code_map_batch_returns_index_format() {
-        // Batch mode (files non-empty) returns raw index output with file headers, no overview.
-        let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("lib.rs"), "pub fn hello() {}\n").unwrap();
-        let result = build_code_map(dir.path(), &[], &["lib.rs".to_string()]).unwrap();
-        // Has file header
-        assert!(result.starts_with("# lib.rs\n"), "should start with file header:\n{result}");
-        // Has index-format content (fns: section)
-        assert!(result.contains("fns:"), "should contain fns section:\n{result}");
-        assert!(result.contains("hello()"), "should contain fn:\n{result}");
-        // No overview one-liner
-        assert!(!result.contains("public_functions:"), "should have no overview:\n{result}");
-    }
-
-    #[test]
-    fn code_map_test_file_skeleton_collapsed() {
-        let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("test_auth.py"), "def test_login():\n    assert True\n\ndef test_logout():\n    pass\n").unwrap();
-        let result = build_code_map(dir.path(), &[], &["test_auth.py".to_string()]).unwrap();
-        assert!(result.contains("# test_auth.py"), "should have file header:\n{result}");
-        assert!(result.contains("tests:"), "skeleton should be collapsed to tests: line:\n{result}");
-        assert!(!result.contains("test_login"), "individual test names should not appear:\n{result}");
     }
 
     #[test]
@@ -726,43 +702,16 @@ mod tests {
                 }
             }
         });
-        fs::write(cache_dir.join("code-map.json"), serde_json::to_string(&old_cache).unwrap()).unwrap();
-        // Overview mode triggers cache rebuild
-        let result = build_code_map(dir.path(), &[], &[]).unwrap();
+        fs::write(cache_dir.join("radar.json"), serde_json::to_string(&old_cache).unwrap()).unwrap();
+        let result = build_code_map(dir.path(), &[]).unwrap();
         assert!(result.contains("lib.rs"), "should list file after cache rebuild:\n{result}");
         let cache_data: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(cache_dir.join("code-map.json")).unwrap()).unwrap();
+            serde_json::from_str(&fs::read_to_string(cache_dir.join("radar.json")).unwrap()).unwrap();
         assert_eq!(cache_data["version"], CACHE_VERSION);
     }
 
     #[test]
-    fn code_map_batch_matches_index_source() {
-        // Batch mode calls index_source directly — output must equal a fresh index call.
-        let dir = tempfile::tempdir().unwrap();
-        let source = "pub struct Foo {}\npub fn bar() {}\nfn private() {}\n";
-        fs::write(dir.path().join("lib.rs"), source).unwrap();
-        let result = build_code_map(dir.path(), &[], &["lib.rs".to_string()]).unwrap();
-        let skeleton_block = result
-            .strip_prefix("# lib.rs\n")
-            .unwrap_or(&result);
-        let fresh = crate::index::index_source(source.as_bytes(), crate::index::Language::Rust).unwrap();
-        assert_eq!(skeleton_block.trim(), fresh.trim(),
-            "batch skeleton should match fresh index_source output");
-    }
-
-    #[test]
-    fn code_map_parse_error_no_skeleton() {
-        let dir = tempfile::tempdir().unwrap();
-        // Tree-sitter is error-tolerant — broken syntax parses as Ok with minimal output.
-        // The file header still appears; no [skeleton] marker is used in batch mode.
-        fs::write(dir.path().join("broken.rs"), "this is not valid rust {{{{").unwrap();
-        let result = build_code_map(dir.path(), &[], &["broken.rs".to_string()]).unwrap();
-        assert!(result.contains("broken.rs"), "should list the file:\n{result}");
-    }
-
-    #[test]
     fn code_map_globs_filter_overview() {
-        // Globs apply in overview mode (no files param).
         let dir = tempfile::tempdir().unwrap();
         let src_dir = dir.path().join("src");
         let lib_dir = dir.path().join("lib");
@@ -770,22 +719,73 @@ mod tests {
         fs::create_dir(&lib_dir).unwrap();
         fs::write(src_dir.join("main.rs"), "pub fn main() {}\n").unwrap();
         fs::write(lib_dir.join("helper.rs"), "pub fn help() {}\n").unwrap();
-        let result = build_code_map(dir.path(), &["src/**/*.rs".to_string()], &[]).unwrap();
+        let result = build_code_map(dir.path(), &["src/**/*.rs".to_string()]).unwrap();
         assert!(result.contains("src/main.rs"), "src/main.rs should appear:\n{result}");
         assert!(!result.contains("helper.rs"), "helper.rs outside glob should be excluded:\n{result}");
     }
 
     #[test]
+    fn truncation_caps_long_function_lists() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut src = String::new();
+        for i in 0..15 {
+            src.push_str(&format!("pub fn func_{i}() {{}}\n"));
+        }
+        fs::write(dir.path().join("big.rs"), &src).unwrap();
+
+        let result = build_code_map(dir.path(), &[]).unwrap();
+        assert!(result.contains("... +9 more"), "should truncate: {result}");
+        assert!(result.contains("use xray for full list"), "should include xray cue: {result}");
+    }
+
+    #[test]
+    fn directory_grouping_for_large_repos() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..60 {
+            let subdir = dir.path().join(format!("src/mod_{}", i / 10));
+            fs::create_dir_all(&subdir).unwrap();
+            fs::write(subdir.join(format!("file_{i}.rs")), format!("pub fn f{i}() {{}}\n")).unwrap();
+        }
+        for i in 0..50 {
+            let subdir = dir.path().join(format!("lib/pkg_{}", i / 10));
+            fs::create_dir_all(&subdir).unwrap();
+            fs::write(subdir.join(format!("mod_{i}.rs")), format!("pub struct S{i};\n")).unwrap();
+        }
+
+        let result = build_code_map(dir.path(), &[]).unwrap();
+        assert!(result.contains("src/mod_0/"), "should have directory headers: {result}");
+        assert!(!result.contains("public_types:"), "grouped mode should not use flat format labels");
+    }
+
+    #[test]
+    fn grouping_threshold_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        // Exactly 100 files — should use flat format (threshold is >100)
+        for i in 0..100 {
+            let subdir = dir.path().join(format!("pkg/{}", i / 20));
+            fs::create_dir_all(&subdir).unwrap();
+            fs::write(subdir.join(format!("f{i}.rs")), format!("pub fn x{i}() {{}}\n")).unwrap();
+        }
+        let result = build_code_map(dir.path(), &[]).unwrap();
+        assert!(result.contains("public_functions:"), "100 files should use flat format: {}", result.lines().next().unwrap_or(""));
+
+        // Add one more — 101 files triggers grouped format
+        let subdir = dir.path().join("pkg/5");
+        fs::create_dir_all(&subdir).unwrap();
+        fs::write(subdir.join("extra.rs"), "pub fn extra() {}\n").unwrap();
+        let result = build_code_map(dir.path(), &[]).unwrap();
+        assert!(!result.contains("public_functions:"), "101 files should use grouped format");
+    }
+
+    #[test]
     fn code_map_multiline_signatures_collapsed_to_single_line() {
         let dir = tempfile::tempdir().unwrap();
-        // Function with a multi-line signature (as it would appear in source)
         fs::write(
             dir.path().join("lib.rs"),
             "pub fn long_fn(\n    a: &str,\n    b: usize,\n    c: bool,\n) -> Option<String> {\n    None\n}\n",
         )
         .unwrap();
-        let result = build_code_map(dir.path(), &[], &[]).unwrap();
-        // The one-liner entry must be exactly one line (no embedded newlines in the signature)
+        let result = build_code_map(dir.path(), &[]).unwrap();
         let file_line = result
             .lines()
             .find(|l| l.contains("lib.rs"))
@@ -798,7 +798,6 @@ mod tests {
             !file_line.contains('\n'),
             "one-liner must not contain embedded newlines: {file_line}"
         );
-        // The full output for this file should be exactly one line
         assert_eq!(
             result.lines().filter(|l| l.contains("lib.rs")).count(),
             1,

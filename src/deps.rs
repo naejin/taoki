@@ -696,51 +696,43 @@ pub fn build_deps_graph(root: &Path, files: &[PathBuf]) -> DepsGraph {
 
 /// Query the dependency graph for a specific file.
 /// Returns formatted string with depends_on, used_by, and external sections.
-pub fn query_deps(graph: &DepsGraph, file: &str) -> String {
+pub fn query_deps(graph: &DepsGraph, file: &str, depth: u32) -> String {
     let mut out = String::new();
 
-    // depends_on: internal files this file imports
-    let depends_on: Vec<String> = graph
-        .graph
-        .get(file)
-        .map(|fi| {
-            fi.imports
-                .iter()
-                .filter(|i| !i.external)
-                .map(|i| i.path.clone())
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let mut depends_on = depends_on;
-    depends_on.sort();
-    depends_on.dedup();
+    // depends_on: internal files this file imports (always depth 1)
+    // Deduplicate by path, merge symbols from duplicate imports
+    let mut depends_map: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+    if let Some(fi) = graph.graph.get(file) {
+        for imp in &fi.imports {
+            if !imp.external {
+                let entry = depends_map.entry(imp.path.clone()).or_default();
+                for sym in &imp.symbols {
+                    if !entry.contains(sym) {
+                        entry.push(sym.clone());
+                    }
+                }
+            }
+        }
+    }
 
     out.push_str("depends_on:\n");
-    for dep in &depends_on {
-        out.push_str(&format!("  {dep}\n"));
-    }
-
-    // used_by: other files that import this file
-    let mut used_by: Vec<String> = Vec::new();
-    for (other_file, fi) in &graph.graph {
-        if other_file == file {
-            continue;
-        }
-        if fi
-            .imports
-            .iter()
-            .any(|i| !i.external && i.path == file)
-        {
-            used_by.push(other_file.clone());
+    for (path, symbols) in depends_map.iter_mut().map(|(k, v)| { v.sort(); (k, v) }) {
+        if symbols.is_empty() {
+            out.push_str(&format!("  {path}\n"));
+        } else {
+            out.push_str(&format!("  {path} ({})\n", symbols.join(", ")));
         }
     }
-    used_by.sort();
 
-    out.push_str("used_by:\n");
-    for user in &used_by {
-        out.push_str(&format!("  {user}\n"));
+    // used_by with depth expansion
+    if depth > 1 {
+        out.push_str(&format!("used_by (depth={depth}):\n"));
+    } else {
+        out.push_str("used_by:\n");
     }
+    let mut visited = std::collections::HashSet::new();
+    visited.insert(file.to_string());
+    collect_used_by(graph, file, depth, 1, &mut visited, &mut out);
 
     // external: deduplicated external dependencies
     let mut external: Vec<String> = graph
@@ -763,6 +755,61 @@ pub fn query_deps(graph: &DepsGraph, file: &str) -> String {
     }
 
     out
+}
+
+fn collect_used_by(
+    graph: &DepsGraph,
+    target: &str,
+    max_depth: u32,
+    current_depth: u32,
+    visited: &mut std::collections::HashSet<String>,
+    out: &mut String,
+) {
+    if current_depth > max_depth {
+        return;
+    }
+
+    // Merge symbols from all imports of target per file, then sort for stable output
+    let mut user_map: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+    for (other_file, fi) in &graph.graph {
+        for imp in &fi.imports {
+            if !imp.external && imp.path == target {
+                let entry = user_map.entry(other_file.clone()).or_default();
+                for sym in &imp.symbols {
+                    if !entry.contains(sym) {
+                        entry.push(sym.clone());
+                    }
+                }
+            }
+        }
+    }
+    let users: Vec<(String, Vec<String>)> = user_map.into_iter().map(|(k, mut v)| {
+        v.sort();
+        (k, v)
+    }).collect();
+
+    let indent = if current_depth == 1 {
+        "  ".to_string()
+    } else {
+        format!("{}→ ", "  ".repeat(current_depth as usize))
+    };
+
+    for (user, symbols) in &users {
+        if visited.contains(user) {
+            out.push_str(&format!("{indent}{user} (cycle)\n"));
+            continue;
+        }
+        if symbols.is_empty() {
+            out.push_str(&format!("{indent}{user}\n"));
+        } else {
+            out.push_str(&format!("{indent}{user} ({})\n", symbols.join(", ")));
+        }
+        if current_depth < max_depth {
+            visited.insert(user.clone());
+            collect_used_by(graph, user, max_depth, current_depth + 1, visited, out);
+            visited.remove(user);
+        }
+    }
 }
 
 pub fn deps_cache_path(root: &Path) -> PathBuf {
@@ -1174,7 +1221,7 @@ mod tests {
                 ],
             },
         );
-        let out = query_deps(&graph, "src/main.rs");
+        let out = query_deps(&graph, "src/main.rs", 1);
         // Should only list src/utils.rs once
         assert_eq!(
             out.matches("src/utils.rs").count(),
@@ -1199,7 +1246,7 @@ mod tests {
         let files = vec![src.join("main.rs"), src.join("helper.rs")];
         let graph = build_deps_graph(dir.path(), &files);
 
-        let main_deps = query_deps(&graph, "src/main.rs");
+        let main_deps = query_deps(&graph, "src/main.rs", 1);
         assert!(
             main_deps.contains("depends_on:"),
             "main should depend on helper:\n{main_deps}"
@@ -1209,7 +1256,7 @@ mod tests {
             "main should depend on helper:\n{main_deps}"
         );
 
-        let helper_deps = query_deps(&graph, "src/helper.rs");
+        let helper_deps = query_deps(&graph, "src/helper.rs", 1);
         assert!(
             helper_deps.contains("used_by:"),
             "helper should be used by main:\n{helper_deps}"
@@ -1399,5 +1446,84 @@ mod tests {
             "expected module key, got: {map:?}"
         );
         assert_eq!(map["github.com/owner/myrepo"], PathBuf::from(""));
+    }
+
+    #[test]
+    fn query_deps_renders_symbols() {
+        let mut graph = DepsGraph { version: DEPS_VERSION, graph: HashMap::new() };
+        graph.graph.insert("a.py".to_string(), FileImports {
+            imports: vec![ImportInfo {
+                path: "b.py".to_string(),
+                symbols: vec!["Foo".to_string(), "Bar".to_string()],
+                external: false,
+            }],
+        });
+        graph.graph.insert("b.py".to_string(), FileImports { imports: vec![] });
+
+        let out = query_deps(&graph, "a.py", 1);
+        assert!(out.contains("b.py (Bar, Foo)"), "should show sorted symbols: {out}");
+    }
+
+    #[test]
+    fn query_deps_used_by_merges_symbols_from_multiple_imports() {
+        let mut graph = DepsGraph { version: DEPS_VERSION, graph: HashMap::new() };
+        graph.graph.insert("target.py".to_string(), FileImports { imports: vec![] });
+        // user.py has two separate import statements from target.py
+        graph.graph.insert("user.py".to_string(), FileImports {
+            imports: vec![
+                ImportInfo { path: "target.py".to_string(), symbols: vec!["A".to_string()], external: false },
+                ImportInfo { path: "target.py".to_string(), symbols: vec!["B".to_string()], external: false },
+            ],
+        });
+
+        let out = query_deps(&graph, "target.py", 1);
+        assert!(out.contains("A"), "should include symbol A: {out}");
+        assert!(out.contains("B"), "should include symbol B: {out}");
+        assert!(out.contains("user.py (A, B)"), "should merge symbols: {out}");
+    }
+
+    #[test]
+    fn query_deps_depth_2_shows_transitive() {
+        let mut graph = DepsGraph { version: DEPS_VERSION, graph: HashMap::new() };
+        graph.graph.insert("a.py".to_string(), FileImports { imports: vec![] });
+        graph.graph.insert("b.py".to_string(), FileImports {
+            imports: vec![ImportInfo { path: "a.py".to_string(), symbols: vec!["X".to_string()], external: false }],
+        });
+        graph.graph.insert("c.py".to_string(), FileImports {
+            imports: vec![ImportInfo { path: "b.py".to_string(), symbols: vec!["Y".to_string()], external: false }],
+        });
+
+        let out = query_deps(&graph, "a.py", 2);
+        assert!(out.contains("b.py"), "depth 1: b.py uses a.py: {out}");
+        assert!(out.contains("c.py"), "depth 2: c.py uses b.py: {out}");
+    }
+
+    #[test]
+    fn query_deps_cycle_detection() {
+        let mut graph = DepsGraph { version: DEPS_VERSION, graph: HashMap::new() };
+        graph.graph.insert("a.py".to_string(), FileImports {
+            imports: vec![ImportInfo { path: "b.py".to_string(), symbols: vec![], external: false }],
+        });
+        graph.graph.insert("b.py".to_string(), FileImports {
+            imports: vec![ImportInfo { path: "a.py".to_string(), symbols: vec![], external: false }],
+        });
+
+        let out = query_deps(&graph, "a.py", 3);
+        assert!(out.contains("(cycle)"), "should detect cycle: {out}");
+    }
+
+    #[test]
+    fn query_deps_depth_header() {
+        let mut graph = DepsGraph { version: DEPS_VERSION, graph: HashMap::new() };
+        graph.graph.insert("a.py".to_string(), FileImports { imports: vec![] });
+        graph.graph.insert("b.py".to_string(), FileImports {
+            imports: vec![ImportInfo { path: "a.py".to_string(), symbols: vec![], external: false }],
+        });
+
+        let out1 = query_deps(&graph, "a.py", 1);
+        assert!(out1.contains("used_by:\n"), "depth 1 has plain header: {out1}");
+
+        let out2 = query_deps(&graph, "a.py", 2);
+        assert!(out2.contains("used_by (depth=2):"), "depth 2 has annotated header: {out2}");
     }
 }

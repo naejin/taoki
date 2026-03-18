@@ -10,7 +10,7 @@ SUBAGENT_TYPE=$(echo "$INPUT" | grep -o '"subagent_type"[[:space:]]*:[[:space:]]
 case "$SUBAGENT_TYPE" in
   ""|general-purpose|Explore|Plan|feature-dev:*|superpowers:code-reviewer|code-simplifier:*)
     cat <<'EOF'
-{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","additionalContext":"This subagent has access to Taoki MCP tools for code intelligence. If it will explore or modify code, include in its prompt: 'You have MCP tools for code intelligence: mcp__taoki__code_map (repo overview — pass files: [...] for full skeletons), mcp__taoki__index (single file skeleton), mcp__taoki__dependencies (import/export graph). Call code_map before reading source files.'"}}
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","additionalContext":"This subagent has access to Taoki MCP tools for code intelligence. If it will explore or modify code, include in its prompt: 'You have MCP tools for code intelligence: mcp__taoki__radar (repo overview with tags), mcp__taoki__xray (single file skeleton), mcp__taoki__ripple (import/export graph with depth). Call radar first when exploring a codebase, then xray on files of interest.'"}}
 EOF
     ;;
   *)
