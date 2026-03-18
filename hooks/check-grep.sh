@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PreToolUse hook for Grep — gentle tip about code_map for structural exploration.
+# PreToolUse hook for Grep — gentle tip about radar/xray for structural exploration.
 # Always allows the operation.
 
 cat <<'EOF'

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PreToolUse hook for Glob — nudges toward mcp__taoki__code_map for codebase exploration.
+# PreToolUse hook for Glob — nudges toward mcp__taoki__radar for codebase exploration.
 # Always allows the operation.
 
 cat <<'EOF'
