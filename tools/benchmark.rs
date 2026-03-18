@@ -8,6 +8,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use taoki::{
     codemap,
+    deps,
     index::{self, Language},
     mcp,
 };
@@ -30,6 +31,8 @@ struct RepoEntry {
     url: String,
     sha: String,
     lang: String,
+    #[serde(default)]
+    test_files: Vec<String>,
 }
 
 struct ProjectResult {
@@ -44,6 +47,13 @@ struct ProjectResult {
     total_source_bytes: usize,
     total_skeleton_bytes: usize,
     errors: HashMap<String, usize>,
+    // Radar validation
+    radar_ok: bool,
+    radar_error: Option<String>,
+    // Ripple validation
+    ripple_tested: usize,
+    ripple_passed: usize,
+    ripple_failures: Vec<String>,
 }
 
 impl ProjectResult {
@@ -73,6 +83,8 @@ impl ProjectResult {
         self.parse_pct() >= PARSE_THRESHOLD
             && self.empty_pct() <= EMPTY_THRESHOLD
             && self.reduction_pct() >= REDUCTION_THRESHOLD
+            && self.radar_ok
+            && self.ripple_failures.is_empty()
     }
 }
 
@@ -181,7 +193,59 @@ fn run_project(repo: &RepoEntry) -> ProjectResult {
         total_source_bytes: 0,
         total_skeleton_bytes: 0,
         errors: HashMap::new(),
+        radar_ok: false,
+        radar_error: None,
+        ripple_tested: 0,
+        ripple_passed: 0,
+        ripple_failures: Vec::new(),
     };
+
+    // --- Radar validation ---
+    match codemap::build_code_map(&repo_path, &[]) {
+        Ok(output) => {
+            result.radar_ok = !output.is_empty();
+            if output.is_empty() {
+                result.radar_error = Some("radar produced empty output".to_string());
+            }
+        }
+        Err(e) => {
+            result.radar_error = Some(format!("radar error: {e}"));
+        }
+    }
+
+    // --- Ripple validation ---
+    if !repo.test_files.is_empty() {
+        let graph = deps::build_deps_graph(&repo_path, &files, None);
+
+        for test_file in &repo.test_files {
+            result.ripple_tested += 1;
+            let rel_path = test_file.replace('\\', "/");
+
+            if !graph.graph.contains_key(&rel_path) {
+                result.ripple_failures.push(format!(
+                    "{}: not found in dependency graph", test_file
+                ));
+                continue;
+            }
+
+            // Direct graph inspection (not string parsing — more robust)
+            let has_internal_depends = graph.graph.get(&rel_path)
+                .map(|fi| fi.imports.iter().any(|i| !i.external))
+                .unwrap_or(false);
+
+            let has_internal_used_by = graph.graph.iter().any(|(other, fi)| {
+                other != &rel_path && fi.imports.iter().any(|i| !i.external && i.path == rel_path)
+            });
+
+            if has_internal_depends || has_internal_used_by {
+                result.ripple_passed += 1;
+            } else {
+                result.ripple_failures.push(format!(
+                    "{}: no internal depends_on or used_by", test_file
+                ));
+            }
+        }
+    }
 
     for file in &files {
         let file_size = match fs::metadata(file).map(|m| m.len()) {
@@ -274,16 +338,21 @@ fn inject_readme(readme_path: &str, table: &str) -> Result<(), String> {
 }
 
 fn format_table(results: &[ProjectResult]) -> String {
-    let mut table = String::new();
-    table.push_str(
-        "| Project | Language | Files | Parsed | Parse % | Empty Skeletons | Reduction | Status |\n",
-    );
-    table.push_str(
-        "|---------|----------|-------|--------|---------|-----------------|-----------|--------|\n",
-    );
+    let mut out = String::new();
+    out.push_str("| Project | Language | Files | Parsed | Parse % | Empty Skeletons | Reduction | Radar | Ripple | Status |\n");
+    out.push_str("|---------|----------|------:|-------:|--------:|----------------:|----------:|------:|-------:|--------|\n");
     for r in results {
-        table.push_str(&format!(
-            "| {} | {} | {} | {} | {:.0}% | {} | {:.0}% | {} |\n",
+        let status = if r.passed() { "PASS" } else { "FAIL" };
+        let radar = if r.radar_ok { "OK" } else { "FAIL" };
+        let ripple = if r.ripple_tested == 0 {
+            "n/a".to_string()
+        } else if r.ripple_failures.is_empty() {
+            format!("{}/{}", r.ripple_passed, r.ripple_tested)
+        } else {
+            "FAIL".to_string()
+        };
+        out.push_str(&format!(
+            "| {} | {} | {} | {} | {:.0}% | {} | {:.0}% | {} | {} | {} |\n",
             r.name,
             r.lang,
             r.total_files,
@@ -291,10 +360,12 @@ fn format_table(results: &[ProjectResult]) -> String {
             r.parse_pct(),
             r.empty_skeletons,
             r.reduction_pct(),
-            if r.passed() { "PASS" } else { "FAIL" },
+            radar,
+            ripple,
+            status,
         ));
     }
-    table
+    out
 }
 
 fn format_error_summary(results: &[ProjectResult]) -> String {
@@ -342,6 +413,22 @@ fn print_results(results: &[ProjectResult]) {
             r.reduction_pct(),
             status,
         );
+        if !r.radar_ok {
+            println!(
+                "  RADAR FAIL: {}",
+                r.radar_error.as_deref().unwrap_or("unknown error")
+            );
+        }
+        if !r.ripple_failures.is_empty() {
+            for fail in &r.ripple_failures {
+                println!("  RIPPLE FAIL: {}", fail);
+            }
+        } else if r.ripple_tested > 0 {
+            println!(
+                "  ripple: {}/{} test files resolved internal deps",
+                r.ripple_passed, r.ripple_tested
+            );
+        }
     }
 
     let error_summary = format_error_summary(results);
@@ -416,8 +503,8 @@ mod tests {
     #[test]
     fn validate_catches_duplicate_names() {
         let repos = vec![
-            RepoEntry { name: "foo".into(), url: "https://x.com/foo".into(), sha: "abc".into(), lang: "Rust".into() },
-            RepoEntry { name: "foo".into(), url: "https://x.com/bar".into(), sha: "def".into(), lang: "Go".into() },
+            RepoEntry { name: "foo".into(), url: "https://x.com/foo".into(), sha: "abc".into(), lang: "Rust".into(), test_files: vec![] },
+            RepoEntry { name: "foo".into(), url: "https://x.com/bar".into(), sha: "def".into(), lang: "Go".into(), test_files: vec![] },
         ];
         let errors = validate_repos(&repos);
         assert_eq!(errors.len(), 1);
@@ -427,7 +514,7 @@ mod tests {
     #[test]
     fn validate_catches_missing_url() {
         let repos = vec![
-            RepoEntry { name: "foo".into(), url: "".into(), sha: "abc".into(), lang: "Rust".into() },
+            RepoEntry { name: "foo".into(), url: "".into(), sha: "abc".into(), lang: "Rust".into(), test_files: vec![] },
         ];
         let errors = validate_repos(&repos);
         assert_eq!(errors.len(), 1);
@@ -437,8 +524,8 @@ mod tests {
     #[test]
     fn validate_accepts_valid_repos() {
         let repos = vec![
-            RepoEntry { name: "a".into(), url: "https://a.com".into(), sha: "abc".into(), lang: "Rust".into() },
-            RepoEntry { name: "b".into(), url: "https://b.com".into(), sha: "def".into(), lang: "Go".into() },
+            RepoEntry { name: "a".into(), url: "https://a.com".into(), sha: "abc".into(), lang: "Rust".into(), test_files: vec![] },
+            RepoEntry { name: "b".into(), url: "https://b.com".into(), sha: "def".into(), lang: "Go".into(), test_files: vec![] },
         ];
         assert!(validate_repos(&repos).is_empty());
     }
@@ -463,6 +550,11 @@ mod tests {
             total_source_bytes: source_bytes,
             total_skeleton_bytes: skeleton_bytes,
             errors: HashMap::new(),
+            radar_ok: true,
+            radar_error: None,
+            ripple_tested: 0,
+            ripple_passed: 0,
+            ripple_failures: Vec::new(),
         }
     }
 
@@ -552,6 +644,8 @@ mod tests {
         assert!(table.contains("| test |"));
         assert!(table.contains("| 142 |"));
         assert!(table.contains("| PASS |"));
+        assert!(table.contains("| OK |"));    // radar column
+        assert!(table.contains("| n/a |"));   // ripple column
     }
 
     #[test]
@@ -573,5 +667,47 @@ mod tests {
     fn inject_content_errors_on_reversed_markers() {
         let content = "before\n<!-- BENCH:END -->\nold\n<!-- BENCH:START -->\nafter";
         assert!(inject_content(content, "table").is_err());
+    }
+
+    #[test]
+    fn fail_when_radar_fails() {
+        let mut r = make_result(200, 0, 0, 100, 10000, 2000);
+        r.radar_ok = false;
+        assert!(!r.passed(), "should fail when radar is not ok");
+    }
+
+    #[test]
+    fn fail_when_ripple_has_failures() {
+        let mut r = make_result(200, 0, 0, 100, 10000, 2000);
+        r.ripple_failures.push("file.rs: no internal deps".into());
+        assert!(!r.passed(), "should fail when ripple has failures");
+    }
+
+    #[test]
+    fn pass_when_ripple_not_tested() {
+        let r = make_result(200, 0, 0, 100, 10000, 2000);
+        assert_eq!(r.ripple_tested, 0);
+        assert!(r.passed(), "should pass when no ripple tests configured");
+    }
+
+    #[test]
+    fn format_table_shows_ripple_results() {
+        let mut r = make_result(142, 0, 0, 80, 10000, 2200);
+        r.ripple_tested = 2;
+        r.ripple_passed = 2;
+        let results = vec![r];
+        let table = format_table(&results);
+        assert!(table.contains("| 2/2 |"), "should show ripple pass count: {table}");
+    }
+
+    #[test]
+    fn format_table_shows_ripple_failure() {
+        let mut r = make_result(142, 0, 0, 80, 10000, 2200);
+        r.ripple_tested = 2;
+        r.ripple_passed = 1;
+        r.ripple_failures.push("file.rs: no internal deps".into());
+        let results = vec![r];
+        let table = format_table(&results);
+        assert!(table.contains("| FAIL |"), "should show FAIL for ripple: {table}");
     }
 }
