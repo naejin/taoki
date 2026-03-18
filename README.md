@@ -71,7 +71,7 @@ external:
 - **Docstring extraction** — first line of doc comments (`///`, `/** */`, Python docstrings) shown inline as `/// summary`
 - **Body insights** — functions show `→ calls:` (free/scoped), `→ methods:` (with receiver context like `client.get`), `→ match:` (switch arms), and `→ errors:` (error sites). Calls and methods are separated: domain orchestration vs plumbing, so the signal is always visible first
 - **Test collapsing** — test code detected and collapsed across all supported languages
-- **Fast caching** — blake3 content hashing with file-level locking; repeated calls are near-instant
+- **Fast incremental caching** — blake3 content hashing with two-layer invalidation; file changes skip only the affected entries, new files are detected automatically
 - **Tree-sitter parsing** — accurate, fast, no regex heuristics
 - **Universal** — no name-based filtering or library-specific assumptions. Works the same on any codebase. Detection uses AST structure and language stdlib only
 - **6 languages** — Rust, Python, TypeScript, JavaScript, Go, Java
@@ -154,11 +154,11 @@ Taoki runs as an [MCP](https://modelcontextprotocol.io/) server over stdio. When
 
 - **`radar`** walks the repo (respecting `.gitignore`), hashes each file with [blake3](https://github.com/BLAKE3-team/BLAKE3), and extracts public API summaries using [tree-sitter](https://tree-sitter.github.io/). Results cached at `.cache/taoki/radar.json`. Large repos (>100 files) get directory-grouped output. Long API lists are truncated with xray cue.
 - **`xray`** parses a single file and returns its structural skeleton. The first line of doc comments is extracted and shown inline (`/// summary`), giving agents intent/contract information without reading source. Function and method bodies are analyzed to show call graphs, match/switch arms, and error return sites as `→` insight lines. Test code is automatically detected and collapsed — Python (`test_*`, `Test*`), Go (`Test*`, `Benchmark*`), TypeScript/JS (`describe`, `it`, `test`), Rust (`#[test]`, `#[cfg(test)]`). Files matching test naming patterns are collapsed entirely. Results cached on disk at `.cache/taoki/xray.json`.
-- **`ripple`** queries a cached dependency graph (`.cache/taoki/deps.json`) showing internal imports with symbols, reverse dependencies with depth expansion (1-3 levels), and external packages. Cycle detection prevents infinite loops.
+- **`ripple`** queries an incrementally-cached dependency graph (`.cache/taoki/deps.json`) showing internal imports with symbols, reverse dependencies with depth expansion (1-3 levels), and external packages. Resolution works across any project layout — Java suffix-based matching (no hardcoded source roots), Rust workspace-aware resolution with custom `[[bin]]/[lib]` path detection, Go cross-package resolution via module maps. For Go single-package libraries, a `co-package:` section lists sibling files. Cycle detection prevents infinite loops.
 
 ## Caching
 
-Results are cached per-file using blake3 content hashes at `.cache/taoki/` in your repository. The cache is safe to delete at any time. Add `.cache/` to your `.gitignore`.
+Results are cached per-file using blake3 content hashes at `.cache/taoki/` in your repository. Caches automatically invalidate when files change, are added, or removed — no manual cache management needed. The dependency graph uses two-layer invalidation: per-file content hashes skip re-parsing, while a fingerprint over the file list and workspace config triggers re-resolution when the project structure changes. The cache is safe to delete at any time. Add `.cache/` to your `.gitignore`.
 
 ## Update
 
@@ -198,7 +198,7 @@ Tested against 15 open-source projects (run `cargo run --bin benchmark --feature
 
 **Known limitation:** deno fails on empty skeletons due to `.d.ts` ambient declaration files (`declare namespace`, `declare function`). The TypeScript extractor does not yet handle `declare` blocks — these files parse successfully but produce no structural output. Tracked for a future extractor improvement.
 
-*Results from v0.9.3 against pinned commits. Run `cargo run --bin benchmark --features benchmark -- --update-pins` to refresh pins.*
+*Results from v1.1.0 against pinned commits. Run `cargo run --bin benchmark --features benchmark -- --update-pins` to refresh pins.*
 
 ## License
 
