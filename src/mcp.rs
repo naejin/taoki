@@ -575,28 +575,24 @@ fn call_ripple(args: &Value) -> ToolResult {
         .to_string_lossy()
         .to_string();
 
-    // Try loading cached graph, build if missing
-    let graph = match crate::deps::load_deps_cache(root) {
-        Some(g) => g,
-        None => {
-            // Build graph by walking all files
-            let files = match crate::codemap::walk_files_public(root) {
-                Ok(f) => f,
-                Err(e) => {
-                    return ToolResult {
-                        content: vec![ToolContent {
-                            r#type: "text".to_string(),
-                            text: format!("failed to walk files: {e}"),
-                        }],
-                        is_error: true,
-                    };
-                }
+    // Always walk files — needed for incremental invalidation
+    let files = match crate::codemap::walk_files_public(root) {
+        Ok(f) => f,
+        Err(e) => {
+            return ToolResult {
+                content: vec![ToolContent {
+                    r#type: "text".to_string(),
+                    text: format!("failed to walk files: {e}"),
+                }],
+                is_error: true,
             };
-            let g = crate::deps::build_deps_graph(root, &files, None);
-            crate::deps::save_deps_cache(root, &g);
-            g
         }
     };
+
+    // Load old cache (if any) and do incremental build
+    let old_cache = crate::deps::load_deps_cache(root);
+    let graph = crate::deps::build_deps_graph(root, &files, old_cache.as_ref());
+    crate::deps::save_deps_cache(root, &graph);
 
     let output = crate::deps::query_deps(&graph, &rel, depth);
 
@@ -745,5 +741,33 @@ mod tests {
         assert!(!is_test_filename(std::path::Path::new("lib/data/parser.ts")));
         assert!(!is_test_filename(std::path::Path::new("src/fixtures/models.py")));
         assert!(!is_test_filename(std::path::Path::new("app/fixtures/seed.ts")));
+    }
+
+    #[test]
+    fn ripple_detects_new_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("main.rs"), "use crate::helper;\nfn main() {}\n").unwrap();
+        fs::write(src.join("helper.rs"), "pub fn run() {}\n").unwrap();
+
+        // First call — builds and caches the graph
+        let args1 = serde_json::json!({
+            "file": src.join("helper.rs").to_str().unwrap(),
+            "repo_root": dir.path().to_str().unwrap(),
+        });
+        let r1 = call_ripple(&args1);
+        assert!(!r1.is_error);
+        assert!(r1.content[0].text.contains("src/main.rs"), "helper used by main: {}", r1.content[0].text);
+
+        // Add a new file that imports helper
+        fs::write(src.join("utils.rs"), "use crate::helper;\npub fn util() {}\n").unwrap();
+
+        // Second call — should detect new file without manual cache deletion
+        let r2 = call_ripple(&args1);
+        assert!(!r2.is_error);
+        let text = &r2.content[0].text;
+        assert!(text.contains("src/main.rs"), "helper still used by main: {text}");
+        assert!(text.contains("src/utils.rs"), "helper now also used by utils: {text}");
     }
 }
