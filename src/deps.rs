@@ -716,7 +716,7 @@ pub fn query_deps(graph: &DepsGraph, file: &str, depth: u32) -> String {
     }
 
     out.push_str("depends_on:\n");
-    for (path, symbols) in &depends_map {
+    for (path, symbols) in depends_map.iter_mut().map(|(k, v)| { v.sort(); (k, v) }) {
         if symbols.is_empty() {
             out.push_str(&format!("  {path}\n"));
         } else {
@@ -783,7 +783,10 @@ fn collect_used_by(
             }
         }
     }
-    let users: Vec<(String, Vec<String>)> = user_map.into_iter().collect();
+    let users: Vec<(String, Vec<String>)> = user_map.into_iter().map(|(k, mut v)| {
+        v.sort();
+        (k, v)
+    }).collect();
 
     let indent = if current_depth == 1 {
         "  ".to_string()
@@ -1458,7 +1461,7 @@ mod tests {
         graph.graph.insert("b.py".to_string(), FileImports { imports: vec![] });
 
         let out = query_deps(&graph, "a.py", 1);
-        assert!(out.contains("b.py (Foo, Bar)"), "should show symbols: {out}");
+        assert!(out.contains("b.py (Bar, Foo)"), "should show sorted symbols: {out}");
     }
 
     #[test]
