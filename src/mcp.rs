@@ -71,7 +71,9 @@ fn load_xray_cache(root: &Path) -> XrayDiskCache {
     result
 }
 
-fn save_xray_cache(root: &Path, cache: &XrayDiskCache) {
+/// Atomically insert a single entry into the xray disk cache.
+/// Acquires an exclusive lock, loads current state, merges the entry, and writes.
+fn upsert_xray_cache(root: &Path, key: String, entry: XrayDiskEntry) {
     let path = xray_cache_path(root);
     if let Some(parent) = path.parent() {
         if std::fs::create_dir_all(parent).is_err() {
@@ -92,7 +94,16 @@ fn save_xray_cache(root: &Path, cache: &XrayDiskCache) {
     if lock_file.lock_exclusive().is_err() {
         return;
     }
-    if let Ok(json) = serde_json::to_string_pretty(cache) {
+    // Load current cache under the exclusive lock
+    let mut cache = match std::fs::read_to_string(&path) {
+        Ok(data) => match serde_json::from_str::<XrayDiskCache>(&data) {
+            Ok(c) if c.version == XRAY_CACHE_VERSION => c,
+            _ => XrayDiskCache { version: XRAY_CACHE_VERSION, files: HashMap::new() },
+        },
+        Err(_) => XrayDiskCache { version: XRAY_CACHE_VERSION, files: HashMap::new() },
+    };
+    cache.files.insert(key, entry);
+    if let Ok(json) = serde_json::to_string_pretty(&cache) {
         let tmp = path.with_extension("tmp");
         if std::fs::write(&tmp, &json).is_ok() {
             let _ = std::fs::rename(&tmp, &path);
@@ -418,12 +429,10 @@ fn call_xray(args: &Value) -> ToolResult {
         });
         // Save to disk cache
         if let (Some(root), Some(ref rel)) = (&repo_root, &rel_path) {
-            let mut disk_cache = load_xray_cache(root);
-            disk_cache.files.insert(rel.clone(), XrayDiskEntry {
+            upsert_xray_cache(root, rel.clone(), XrayDiskEntry {
                 hash: hash.clone(),
                 skeleton: base_skeleton.clone(),
             });
-            save_xray_cache(root, &disk_cache);
         }
         return ToolResult {
             content: vec![ToolContent {
@@ -444,12 +453,10 @@ fn call_xray(args: &Value) -> ToolResult {
             });
             // Save to disk cache
             if let (Some(root), Some(ref rel)) = (&repo_root, &rel_path) {
-                let mut disk_cache = load_xray_cache(root);
-                disk_cache.files.insert(rel.clone(), XrayDiskEntry {
+                upsert_xray_cache(root, rel.clone(), XrayDiskEntry {
                     hash: hash.clone(),
                     skeleton: raw_skeleton.clone(),
                 });
-                save_xray_cache(root, &disk_cache);
             }
             ToolResult {
                 content: vec![ToolContent {
