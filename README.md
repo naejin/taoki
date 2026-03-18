@@ -177,23 +177,23 @@ Or manually: `rm -rf ~/.claude/plugins/taoki`
 Tested against 15 open-source projects (run `cargo run --bin benchmark --features benchmark` to reproduce):
 
 <!-- BENCH:START -->
-| Project | Language | Files | Parsed | Parse % | Empty Skeletons | Reduction | Status |
-|---------|----------|-------|--------|---------|-----------------|-----------|--------|
-| ripgrep | Rust | 100 | 100 | 100% | 0 | 79% | PASS |
-| tokio | Rust | 767 | 767 | 100% | 4 | 82% | PASS |
-| serde | Rust | 208 | 208 | 100% | 0 | 82% | PASS |
-| flask | Python | 83 | 83 | 100% | 0 | 85% | PASS |
-| fastapi | Python | 1122 | 1122 | 100% | 0 | 80% | PASS |
-| black | Python | 307 | 307 | 100% | 0 | 94% | PASS |
-| next.js | TypeScript | 20808 | 20808 | 100% | 20 | 81% | PASS |
-| zod | TypeScript | 393 | 393 | 100% | 0 | 84% | PASS |
-| trpc | TypeScript | 861 | 861 | 100% | 0 | 79% | PASS |
-| caddy | Go | 301 | 301 | 100% | 0 | 80% | PASS |
-| cobra | Go | 36 | 36 | 100% | 0 | 88% | PASS |
-| hugo | Go | 914 | 914 | 100% | 3 | 79% | PASS |
-| guava | Java | 3243 | 3243 | 100% | 0 | 72% | PASS |
-| spring-boot | Java | 8342 | 8342 | 100% | 3 | 61% | PASS |
-| deno | Rust, TS, JS | 5032 | 5032 | 100% | 21 | 73% | FAIL |
+| Project | Language | Files | Parsed | Parse % | Empty Skeletons | Reduction | Radar | Ripple | Status |
+|---------|----------|------:|-------:|--------:|----------------:|----------:|------:|-------:|--------|
+| ripgrep | Rust | 100 | 100 | 100% | 0 | 79% | OK | 2/2 | PASS |
+| tokio | Rust | 767 | 767 | 100% | 4 | 82% | OK | 2/2 | PASS |
+| serde | Rust | 208 | 208 | 100% | 0 | 82% | OK | 2/2 | PASS |
+| flask | Python | 83 | 83 | 100% | 0 | 85% | OK | 2/2 | PASS |
+| fastapi | Python | 1122 | 1122 | 100% | 0 | 80% | OK | 2/2 | PASS |
+| black | Python | 307 | 307 | 100% | 0 | 94% | OK | 2/2 | PASS |
+| next.js | TypeScript | 20808 | 20808 | 100% | 20 | 81% | OK | 2/2 | PASS |
+| zod | TypeScript | 393 | 393 | 100% | 0 | 84% | OK | 2/2 | PASS |
+| trpc | TypeScript | 861 | 861 | 100% | 0 | 79% | OK | 2/2 | PASS |
+| caddy | Go | 301 | 301 | 100% | 0 | 80% | OK | 2/2 | PASS |
+| cobra | Go | 36 | 36 | 100% | 0 | 88% | OK | n/a | PASS |
+| hugo | Go | 914 | 914 | 100% | 3 | 79% | OK | 2/2 | PASS |
+| guava | Java | 3243 | 3243 | 100% | 0 | 72% | OK | 2/2 | PASS |
+| spring-boot | Java | 8342 | 8342 | 100% | 3 | 61% | OK | 2/2 | PASS |
+| deno | Rust, TS, JS | 5032 | 5032 | 100% | 21 | 73% | OK | 2/2 | FAIL |
 <!-- BENCH:END -->
 
 **Known limitation:** deno fails on empty skeletons due to `.d.ts` ambient declaration files (`declare namespace`, `declare function`). The TypeScript extractor does not yet handle `declare` blocks — these files parse successfully but produce no structural output. Tracked for a future extractor improvement.

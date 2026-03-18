@@ -96,7 +96,7 @@
     "lang": "Go",
     "test_files": [
       "cmd/cobra.go",
-      "caddyhttp/caddyhttp.go"
+      "modules/caddyhttp/caddyhttp.go"
     ]
   },
   {
@@ -133,7 +133,7 @@
     "lang": "Java",
     "test_files": [
       "core/spring-boot/src/main/java/org/springframework/boot/SpringApplication.java",
-      "core/spring-boot/src/main/java/org/springframework/boot/web/embedded/tomcat/TomcatWebServer.java"
+      "module/spring-boot-tomcat/src/main/java/org/springframework/boot/tomcat/TomcatWebServer.java"
     ]
   },
   {

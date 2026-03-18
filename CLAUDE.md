@@ -18,7 +18,12 @@ cargo run --bin benchmark --features benchmark           # run against 15 pinned
 cargo run --bin benchmark --features benchmark -- --update-pins  # refresh pinned SHAs
 ```
 
-Feature-gated binary (`tools/benchmark.rs`) that validates taoki against 15 real open-source projects. Not included in release artifacts — development tool only. Repos are pinned in `tools/repos.json`; results are injected into `README.md` between `BENCH:START`/`BENCH:END` markers. 17 benchmark-specific tests run only with `--features benchmark`.
+Feature-gated binary (`tools/benchmark.rs`) that validates all 3 taoki tools against 15 real open-source projects. Not included in release artifacts — development tool only. Validates:
+- **Xray**: parse rate (>99.5%), empty skeleton rate (<1%), token reduction (>50%)
+- **Radar**: code map produces non-empty output for every repo
+- **Ripple**: `test_files` in `repos.json` have internal depends_on or used_by (not all-external) — catches resolution bugs that unit tests miss
+
+Repos are pinned in `tools/repos.json` with `test_files` per repo for ripple validation; results are injected into `README.md` between `BENCH:START`/`BENCH:END` markers. 22 benchmark-specific tests run only with `--features benchmark`.
 
 There are no integration tests or test fixtures — tests use `tempfile` crate to create temporary directories with inline source code.
 
