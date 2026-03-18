@@ -854,6 +854,51 @@ pub fn query_deps(graph: &DepsGraph, file: &str, depth: u32) -> String {
         out.push_str(&format!("  {ext}\n"));
     }
 
+    // co-package: for Go files with no internal deps, show sibling .go files
+    if file.ends_with(".go") {
+        let has_internal_depends = graph.graph.get(file)
+            .map(|fi| fi.imports.iter().any(|i| !i.external))
+            .unwrap_or(false);
+        let has_internal_used_by = graph.graph.iter().any(|(other, fi)| {
+            other != file && fi.imports.iter().any(|i| !i.external && i.path == file)
+        });
+
+        if !has_internal_depends && !has_internal_used_by {
+            let file_dir = std::path::Path::new(file)
+                .parent()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let mut siblings: Vec<&str> = graph.graph.keys()
+                .filter(|k| {
+                    *k != file
+                        && k.ends_with(".go")
+                        && !k.ends_with("_test.go")
+                        && {
+                            let k_dir = std::path::Path::new(k.as_str())
+                                .parent()
+                                .map(|p| p.to_string_lossy().to_string())
+                                .unwrap_or_default();
+                            k_dir == file_dir
+                        }
+                })
+                .map(|k| {
+                    std::path::Path::new(k.as_str())
+                        .file_name()
+                        .and_then(|f| f.to_str())
+                        .unwrap_or(k)
+                })
+                .collect();
+            siblings.sort();
+
+            if !siblings.is_empty() {
+                out.push_str("co-package:\n");
+                for sib in &siblings {
+                    out.push_str(&format!("  {sib}\n"));
+                }
+            }
+        }
+    }
+
     out
 }
 
@@ -2116,5 +2161,103 @@ name = "mybin"
             Some(&source_dir_map),
         );
         assert_eq!(result, Some("src/utils.rs".to_string()));
+    }
+
+    #[test]
+    fn query_deps_go_co_package_shown_when_no_internal_deps() {
+        let mut graph = DepsGraph {
+            version: CACHE_VERSION,
+            fingerprint: String::new(),
+            graph: HashMap::new(),
+        };
+        graph.graph.insert("command.go".to_string(), fi(vec![
+            ImportInfo { path: "github.com/spf13/pflag".to_string(), symbols: vec![], external: true },
+        ]));
+        graph.graph.insert("args.go".to_string(), fi(vec![]));
+        graph.graph.insert("cobra.go".to_string(), fi(vec![]));
+
+        let out = query_deps(&graph, "command.go", 1);
+        assert!(out.contains("co-package:"), "should show co-package for Go file with no internal deps: {out}");
+        assert!(out.contains("args.go"), "should list sibling: {out}");
+        assert!(out.contains("cobra.go"), "should list sibling: {out}");
+    }
+
+    #[test]
+    fn query_deps_go_co_package_suppressed_with_internal_deps() {
+        let mut graph = DepsGraph {
+            version: CACHE_VERSION,
+            fingerprint: String::new(),
+            graph: HashMap::new(),
+        };
+        graph.graph.insert("cmd/main.go".to_string(), fi(vec![
+            ImportInfo { path: "pkg/server.go".to_string(), symbols: vec![], external: false },
+        ]));
+        graph.graph.insert("cmd/util.go".to_string(), fi(vec![]));
+        graph.graph.insert("pkg/server.go".to_string(), fi(vec![]));
+
+        let out = query_deps(&graph, "cmd/main.go", 1);
+        assert!(!out.contains("co-package:"), "should NOT show co-package when internal deps exist: {out}");
+    }
+
+    #[test]
+    fn query_deps_go_co_package_suppressed_with_used_by_only() {
+        let mut graph = DepsGraph {
+            version: CACHE_VERSION,
+            fingerprint: String::new(),
+            graph: HashMap::new(),
+        };
+        graph.graph.insert("pkg/target.go".to_string(), fi(vec![]));
+        graph.graph.insert("pkg/sibling.go".to_string(), fi(vec![]));
+        graph.graph.insert("cmd/main.go".to_string(), fi(vec![
+            ImportInfo { path: "pkg/target.go".to_string(), symbols: vec![], external: false },
+        ]));
+
+        let out = query_deps(&graph, "pkg/target.go", 1);
+        assert!(!out.contains("co-package:"),
+            "should suppress co-package when file has internal used_by: {out}");
+    }
+
+    #[test]
+    fn query_deps_go_co_package_excludes_test_files() {
+        let mut graph = DepsGraph {
+            version: CACHE_VERSION,
+            fingerprint: String::new(),
+            graph: HashMap::new(),
+        };
+        graph.graph.insert("command.go".to_string(), fi(vec![]));
+        graph.graph.insert("command_test.go".to_string(), fi(vec![]));
+        graph.graph.insert("args.go".to_string(), fi(vec![]));
+
+        let out = query_deps(&graph, "command.go", 1);
+        assert!(out.contains("co-package:"), "should show co-package: {out}");
+        assert!(!out.contains("command_test.go"), "should exclude test files: {out}");
+        assert!(out.contains("args.go"), "should include non-test sibling: {out}");
+    }
+
+    #[test]
+    fn query_deps_non_go_file_never_shows_co_package() {
+        let mut graph = DepsGraph {
+            version: CACHE_VERSION,
+            fingerprint: String::new(),
+            graph: HashMap::new(),
+        };
+        graph.graph.insert("src/main.rs".to_string(), fi(vec![]));
+        graph.graph.insert("src/lib.rs".to_string(), fi(vec![]));
+
+        let out = query_deps(&graph, "src/main.rs", 1);
+        assert!(!out.contains("co-package:"), "should never show co-package for non-Go files: {out}");
+    }
+
+    #[test]
+    fn query_deps_go_single_file_no_co_package() {
+        let mut graph = DepsGraph {
+            version: CACHE_VERSION,
+            fingerprint: String::new(),
+            graph: HashMap::new(),
+        };
+        graph.graph.insert("main.go".to_string(), fi(vec![]));
+
+        let out = query_deps(&graph, "main.go", 1);
+        assert!(!out.contains("co-package:"), "should not show co-package for lone Go file: {out}");
     }
 }
