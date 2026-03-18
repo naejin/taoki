@@ -1,5 +1,5 @@
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 /// Single source of truth for all cache format versions.
 /// Bump this when ANY cache format changes — all caches invalidate together,
@@ -47,6 +47,22 @@ pub fn compute_fingerprint(
     }
 
     hasher.finalize().to_hex().to_string()
+}
+
+/// Remove xray cache entries for files that no longer exist in the repo.
+/// Called during radar (which already walks the full file tree) to prevent
+/// unbounded cache growth from deleted/renamed files.
+pub fn prune_xray_cache(root: &Path, current_files: &[String]) {
+    let mut cache = crate::mcp::load_xray_cache(root);
+    let before = cache.files.len();
+
+    let live: HashSet<&str> = current_files.iter().map(|s| s.as_str()).collect();
+    cache.files.retain(|key, _| live.contains(key.as_str()));
+
+    // Only write if something was actually pruned
+    if cache.files.len() < before {
+        crate::mcp::save_xray_cache(root, &cache);
+    }
 }
 
 #[cfg(test)]
@@ -108,5 +124,36 @@ mod tests {
         let fp1 = compute_fingerprint(&files, &crate_map, &go_map1);
         let fp2 = compute_fingerprint(&files, &crate_map, &go_map2);
         assert_ne!(fp1, fp2, "go module map change should change fingerprint");
+    }
+
+    #[test]
+    fn prune_xray_cache_removes_dead_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        let cache_dir = dir.path().join(".cache/taoki");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+
+        // Write a cache with 3 entries: 2 real files, 1 dead
+        let cache_data = serde_json::json!({
+            "version": CACHE_VERSION,
+            "files": {
+                "src/alive.rs": { "hash": "abc", "skeleton": "fn alive()" },
+                "src/also_alive.rs": { "hash": "def", "skeleton": "fn also()" },
+                "src/dead.rs": { "hash": "ghi", "skeleton": "fn dead()" }
+            }
+        });
+        std::fs::write(cache_dir.join("xray.json"), serde_json::to_string(&cache_data).unwrap()).unwrap();
+
+        let current_files = vec!["src/alive.rs".to_string(), "src/also_alive.rs".to_string()];
+        prune_xray_cache(dir.path(), &current_files);
+
+        // Reload and verify
+        let data = std::fs::read_to_string(cache_dir.join("xray.json")).unwrap();
+        let cache: serde_json::Value = serde_json::from_str(&data).unwrap();
+        let files = cache["files"].as_object().unwrap();
+        assert_eq!(files.len(), 2, "dead entry should be removed: {files:?}");
+        assert!(files.contains_key("src/alive.rs"));
+        assert!(files.contains_key("src/also_alive.rs"));
+        assert!(!files.contains_key("src/dead.rs"));
     }
 }

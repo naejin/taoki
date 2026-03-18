@@ -2,7 +2,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -18,15 +17,15 @@ const XRAY_CACHE_DIR: &str = ".cache/taoki";
 const XRAY_CACHE_FILE: &str = "xray.json";
 
 #[derive(Debug, Serialize, Deserialize)]
-struct XrayDiskCache {
-    version: u32,
-    files: HashMap<String, XrayDiskEntry>,
+pub(crate) struct XrayDiskCache {
+    pub(crate) version: u32,
+    pub(crate) files: HashMap<String, XrayDiskEntry>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct XrayDiskEntry {
-    hash: String,
-    skeleton: String,
+pub(crate) struct XrayDiskEntry {
+    pub(crate) hash: String,
+    pub(crate) skeleton: String,
 }
 
 fn find_repo_root(file_path: &Path) -> Option<PathBuf> {
@@ -39,11 +38,11 @@ fn find_repo_root(file_path: &Path) -> Option<PathBuf> {
     }
 }
 
-fn xray_cache_path(root: &Path) -> PathBuf {
+pub(crate) fn xray_cache_path(root: &Path) -> PathBuf {
     root.join(XRAY_CACHE_DIR).join(XRAY_CACHE_FILE)
 }
 
-fn load_xray_cache(root: &Path) -> XrayDiskCache {
+pub(crate) fn load_xray_cache(root: &Path) -> XrayDiskCache {
     let path = xray_cache_path(root);
     let lock_path = path.with_extension("lock");
     let lock_file = std::fs::OpenOptions::new()
@@ -71,9 +70,9 @@ fn load_xray_cache(root: &Path) -> XrayDiskCache {
     result
 }
 
-/// Atomically insert a single entry into the xray disk cache.
-/// Acquires an exclusive lock, loads current state, merges the entry, and writes.
-fn upsert_xray_cache(root: &Path, key: String, entry: XrayDiskEntry) {
+/// Write the entire xray cache atomically (lock + tmp + rename).
+pub(crate) fn save_xray_cache(root: &Path, cache: &XrayDiskCache) {
+    use fs2::FileExt;
     let path = xray_cache_path(root);
     if let Some(parent) = path.parent() {
         if std::fs::create_dir_all(parent).is_err() {
@@ -94,22 +93,20 @@ fn upsert_xray_cache(root: &Path, key: String, entry: XrayDiskEntry) {
     if lock_file.lock_exclusive().is_err() {
         return;
     }
-    // Load current cache under the exclusive lock
-    let mut cache = match std::fs::read_to_string(&path) {
-        Ok(data) => match serde_json::from_str::<XrayDiskCache>(&data) {
-            Ok(c) if c.version == CACHE_VERSION => c,
-            _ => XrayDiskCache { version: CACHE_VERSION, files: HashMap::new() },
-        },
-        Err(_) => XrayDiskCache { version: CACHE_VERSION, files: HashMap::new() },
-    };
-    cache.files.insert(key, entry);
-    if let Ok(json) = serde_json::to_string_pretty(&cache) {
+    if let Ok(data) = serde_json::to_string_pretty(cache) {
         let tmp = path.with_extension("tmp");
-        if std::fs::write(&tmp, &json).is_ok() {
+        if std::fs::write(&tmp, &data).is_ok() {
             let _ = std::fs::rename(&tmp, &path);
         }
     }
     let _ = lock_file.unlock();
+}
+
+/// Atomically insert a single entry into the xray disk cache.
+fn upsert_xray_cache(root: &Path, key: String, entry: XrayDiskEntry) {
+    let mut cache = load_xray_cache(root);
+    cache.files.insert(key, entry);
+    save_xray_cache(root, &cache);
 }
 
 #[derive(Debug, Deserialize)]

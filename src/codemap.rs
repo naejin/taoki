@@ -444,6 +444,10 @@ pub fn build_code_map(root: &Path, globs: &[String]) -> Result<String, CodeMapEr
     cache.files = new_files;
     save_cache(root, &cache);
 
+    // Prune xray cache — remove entries for files no longer in the repo
+    let all_rel_paths: Vec<String> = results.iter().map(|r| r.path.clone()).collect();
+    crate::cache::prune_xray_cache(root, &all_rel_paths);
+
     // Build dependency graph incrementally — reuses extraction from old cache
     let old_deps = crate::deps::load_deps_cache(root);
     let graph = crate::deps::build_deps_graph(root, &files, old_deps.as_ref());
