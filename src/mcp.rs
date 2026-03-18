@@ -530,7 +530,7 @@ fn call_radar(args: &Value) -> ToolResult {
 fn call_ripple(args: &Value) -> ToolResult {
     let file_str = args.get("file").and_then(|v| v.as_str()).unwrap_or("");
     let root_str = args.get("repo_root").and_then(|v| v.as_str()).unwrap_or("");
-    let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(1).min(3).max(1) as u32;
+    let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(1).clamp(1, 3) as u32;
 
     if file_str.is_empty() || root_str.is_empty() {
         return ToolResult {

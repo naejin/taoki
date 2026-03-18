@@ -474,7 +474,7 @@ fn truncate_list(items: &[String], threshold: usize, show: usize) -> (Vec<String
 
 fn format_names_only(items: &[String]) -> Vec<String> {
     items.iter().map(|s| {
-        s.split(|c: char| c == '(' || c == ':')
+        s.split(['(', ':'])
          .next()
          .unwrap_or(s)
          .split_whitespace()
