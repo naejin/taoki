@@ -657,7 +657,7 @@ fn normalize_path(path: &Path) -> PathBuf {
 /// and skips tree-sitter parsing. Re-resolves all imports when the file list
 /// or workspace configuration changes (detected via fingerprint).
 pub fn build_deps_graph(root: &Path, files: &[PathBuf], cache: Option<&DepsGraph>) -> DepsGraph {
-    let crate_map = build_crate_map(root);
+    let (crate_map, _source_dir_map) = build_crate_map(root);
     let go_module_map = build_go_module_map(root);
 
     // Build list of relative paths (as strings) for resolution
@@ -945,10 +945,11 @@ pub fn save_deps_cache(root: &Path, graph: &DepsGraph) {
     let _ = lock_file.unlock();
 }
 
-/// Build a map of crate names to their directories by scanning for Cargo.toml files.
-/// Only reads the [package] section to extract the crate name, ignoring [[bin]], [lib], etc.
-pub(crate) fn build_crate_map(root: &Path) -> HashMap<String, PathBuf> {
-    let mut map = HashMap::new();
+/// Build maps of crate names to their directories and (optionally) non-standard source directories.
+/// Both maps are built in a single filesystem walk for efficiency.
+pub(crate) fn build_crate_map(root: &Path) -> (HashMap<String, PathBuf>, HashMap<String, PathBuf>) {
+    let mut crate_map = HashMap::new();
+    let mut source_dir_map = HashMap::new();
     let walker = ignore::WalkBuilder::new(root).build();
     for entry in walker.flatten() {
         if entry.file_name() != "Cargo.toml" {
@@ -959,14 +960,23 @@ pub(crate) fn build_crate_map(root: &Path) -> HashMap<String, PathBuf> {
             Ok(c) => c,
             Err(_) => continue,
         };
-        if let Some(name) = extract_package_name(&content) {
-            let crate_name = name.replace('-', "_");
-            let dir = path.parent().unwrap_or(Path::new(""));
-            let rel = dir.strip_prefix(root).unwrap_or(dir);
-            map.insert(crate_name, rel.to_path_buf());
+        let Some(name) = extract_package_name(&content) else { continue };
+        let crate_name = name.replace('-', "_");
+        let dir = path.parent().unwrap_or(Path::new(""));
+        let rel = dir.strip_prefix(root).unwrap_or(dir);
+        crate_map.insert(crate_name.clone(), rel.to_path_buf());
+
+        // Check for non-standard source directory
+        if let Some(source_dir) = extract_source_dir(&content) {
+            let full_source_dir = if rel == Path::new("") {
+                PathBuf::from(&source_dir)
+            } else {
+                rel.join(&source_dir)
+            };
+            source_dir_map.insert(crate_name, full_source_dir);
         }
     }
-    map
+    (crate_map, source_dir_map)
 }
 
 /// Extract the crate name from the [package] section of a Cargo.toml.
@@ -1001,6 +1011,64 @@ fn extract_package_name(content: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Extract a non-standard source directory from [lib] or [[bin]] path declarations.
+/// Returns the parent directory of the entry point if it differs from standard `src/` layout.
+/// Prefers [lib] over [[bin]] if both exist.
+fn extract_source_dir(content: &str) -> Option<String> {
+    let mut lib_path: Option<String> = None;
+    let mut bin_path: Option<String> = None;
+    let mut current_section = "";
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            if trimmed == "[lib]" {
+                current_section = "lib";
+            } else if trimmed == "[[bin]]" {
+                current_section = "bin";
+            } else {
+                current_section = "";
+            }
+            continue;
+        }
+        if (current_section == "lib" && lib_path.is_none())
+            || (current_section == "bin" && bin_path.is_none())
+        {
+            if let Some(rest) = trimmed.strip_prefix("path") {
+                let rest = rest.trim_start();
+                if let Some(rest) = rest.strip_prefix('=') {
+                    let rest = rest.trim();
+                    if let Some(rest) = rest.strip_prefix('"') {
+                        if let Some(val) = rest.strip_suffix('"') {
+                            if current_section == "lib" {
+                                lib_path = Some(val.to_string());
+                            } else {
+                                bin_path = Some(val.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Prefer [lib] over [[bin]]
+    let path_str = lib_path.or(bin_path)?;
+
+    // Get parent directory of the entry point
+    let parent = std::path::Path::new(&path_str)
+        .parent()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default();
+
+    // Standard layouts: "src" or "" (root) — no override needed
+    if parent.is_empty() || parent == "src" {
+        return None;
+    }
+
+    Some(parent)
 }
 
 /// Find the crate that contains a given file path.
@@ -1149,7 +1217,7 @@ mod tests {
             "[package]\nname = \"crate-b\"\nversion = \"0.1.0\"\n",
         )
         .unwrap();
-        let map = build_crate_map(dir.path());
+        let (map, _) = build_crate_map(dir.path());
         assert_eq!(map.len(), 2);
         assert!(map.contains_key("crate_a"), "missing crate_a: {:?}", map);
         assert!(map.contains_key("crate_b"), "missing crate_b: {:?}", map);
@@ -1163,7 +1231,7 @@ mod tests {
             "[package]\nname = \"my-crate\"\nversion = \"0.1.0\"\n\n[[bin]]\nname = \"my-binary\"\npath = \"src/main.rs\"\n",
         )
         .unwrap();
-        let map = build_crate_map(dir.path());
+        let (map, _) = build_crate_map(dir.path());
         assert_eq!(map.len(), 1);
         assert!(
             map.contains_key("my_crate"),
@@ -1181,7 +1249,7 @@ mod tests {
             "[workspace]\nmembers = [\"a\"]\n",
         )
         .unwrap();
-        let map = build_crate_map(dir.path());
+        let (map, _) = build_crate_map(dir.path());
         // Virtual workspace has no [package], should produce empty map for this file
         assert!(!map.contains_key("workspace"));
     }
@@ -1846,5 +1914,98 @@ mod tests {
             None,
         );
         assert_eq!(result, Some("com/example/Foo.java".to_string()));
+    }
+
+    #[test]
+    fn extract_source_dir_custom_bin_path() {
+        let content = r#"
+[package]
+name = "ripgrep"
+version = "15.0.0"
+
+[[bin]]
+path = "crates/core/main.rs"
+name = "rg"
+"#;
+        let result = extract_source_dir(content);
+        assert_eq!(result, Some("crates/core".to_string()));
+    }
+
+    #[test]
+    fn extract_source_dir_custom_lib_path() {
+        let content = r#"
+[package]
+name = "mylib"
+version = "0.1.0"
+
+[lib]
+path = "lib/src/lib.rs"
+"#;
+        let result = extract_source_dir(content);
+        assert_eq!(result, Some("lib/src".to_string()));
+    }
+
+    #[test]
+    fn extract_source_dir_standard_layout_returns_none() {
+        let content = r#"
+[package]
+name = "normal"
+version = "0.1.0"
+"#;
+        let result = extract_source_dir(content);
+        assert_eq!(result, None, "standard layout should not produce override");
+    }
+
+    #[test]
+    fn extract_source_dir_standard_explicit_path_returns_none() {
+        let content = r#"
+[package]
+name = "normal"
+version = "0.1.0"
+
+[[bin]]
+path = "src/main.rs"
+name = "normal"
+"#;
+        let result = extract_source_dir(content);
+        assert_eq!(result, None, "explicit src/main.rs is standard, no override");
+    }
+
+    #[test]
+    fn extract_source_dir_lib_preferred_over_bin() {
+        let content = r#"
+[package]
+name = "mylib"
+version = "0.1.0"
+
+[lib]
+path = "lib/lib.rs"
+
+[[bin]]
+path = "bin/main.rs"
+name = "mybin"
+"#;
+        let result = extract_source_dir(content);
+        assert_eq!(result, Some("lib".to_string()), "[lib] should take priority over [[bin]]");
+    }
+
+    #[test]
+    fn build_crate_map_returns_source_dir_for_custom_bin_path() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"ripgrep\"\nversion = \"0.1.0\"\n\n[[bin]]\npath = \"crates/core/main.rs\"\nname = \"rg\"\n",
+        ).unwrap();
+        fs::create_dir_all(dir.path().join("crates/core/flags")).unwrap();
+        fs::write(dir.path().join("crates/core/main.rs"), "mod flags;\n").unwrap();
+        fs::write(dir.path().join("crates/core/flags/mod.rs"), "pub mod lowargs;\n").unwrap();
+
+        let (crate_map, source_dir_map) = build_crate_map(dir.path());
+        assert!(crate_map.contains_key("ripgrep"), "crate_map should have ripgrep");
+        assert_eq!(
+            source_dir_map.get("ripgrep").map(|p| p.to_string_lossy().to_string()),
+            Some("crates/core".to_string()),
+            "source_dir_map should detect custom source dir from [[bin]] path"
+        );
     }
 }
