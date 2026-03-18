@@ -17,12 +17,18 @@ pub struct ImportInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileImports {
+    #[serde(default)]
+    pub content_hash: String,
+    #[serde(default)]
+    pub raw_imports: Vec<(String, Vec<String>)>,
     pub imports: Vec<ImportInfo>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DepsGraph {
     pub version: u32,
+    #[serde(default)]
+    pub fingerprint: String,
     pub graph: HashMap<String, FileImports>,
 }
 
@@ -686,11 +692,16 @@ pub fn build_deps_graph(root: &Path, files: &[PathBuf]) -> DepsGraph {
             });
         }
 
-        graph.insert(rel, FileImports { imports });
+        graph.insert(rel, FileImports {
+            content_hash: String::new(),
+            raw_imports: Vec::new(),
+            imports,
+        });
     }
 
     DepsGraph {
         version: CACHE_VERSION,
+        fingerprint: String::new(),
         graph,
     }
 }
@@ -960,6 +971,14 @@ mod tests {
     use super::*;
     use std::fs;
 
+    fn fi(imports: Vec<ImportInfo>) -> FileImports {
+        FileImports {
+            content_hash: String::new(),
+            raw_imports: Vec::new(),
+            imports,
+        }
+    }
+
     #[test]
     fn rust_crate_import_resolves() {
         let all_files = vec![
@@ -1212,24 +1231,23 @@ mod tests {
     fn query_deps_dedup_internal() {
         let mut graph = DepsGraph {
             version: CACHE_VERSION,
+            fingerprint: String::new(),
             graph: std::collections::HashMap::new(),
         };
         graph.graph.insert(
             "src/main.rs".to_string(),
-            FileImports {
-                imports: vec![
-                    ImportInfo {
-                        path: "src/utils.rs".to_string(),
-                        symbols: vec![],
-                        external: false,
-                    },
-                    ImportInfo {
-                        path: "src/utils.rs".to_string(),
-                        symbols: vec![],
-                        external: false,
-                    },
-                ],
-            },
+            fi(vec![
+                ImportInfo {
+                    path: "src/utils.rs".to_string(),
+                    symbols: vec![],
+                    external: false,
+                },
+                ImportInfo {
+                    path: "src/utils.rs".to_string(),
+                    symbols: vec![],
+                    external: false,
+                },
+            ]),
         );
         let out = query_deps(&graph, "src/main.rs", 1);
         // Should only list src/utils.rs once
@@ -1460,15 +1478,13 @@ mod tests {
 
     #[test]
     fn query_deps_renders_symbols() {
-        let mut graph = DepsGraph { version: CACHE_VERSION, graph: HashMap::new() };
-        graph.graph.insert("a.py".to_string(), FileImports {
-            imports: vec![ImportInfo {
-                path: "b.py".to_string(),
-                symbols: vec!["Foo".to_string(), "Bar".to_string()],
-                external: false,
-            }],
-        });
-        graph.graph.insert("b.py".to_string(), FileImports { imports: vec![] });
+        let mut graph = DepsGraph { version: CACHE_VERSION, fingerprint: String::new(), graph: HashMap::new() };
+        graph.graph.insert("a.py".to_string(), fi(vec![ImportInfo {
+            path: "b.py".to_string(),
+            symbols: vec!["Foo".to_string(), "Bar".to_string()],
+            external: false,
+        }]));
+        graph.graph.insert("b.py".to_string(), fi(vec![]));
 
         let out = query_deps(&graph, "a.py", 1);
         assert!(out.contains("b.py (Bar, Foo)"), "should show sorted symbols: {out}");
@@ -1476,15 +1492,13 @@ mod tests {
 
     #[test]
     fn query_deps_used_by_merges_symbols_from_multiple_imports() {
-        let mut graph = DepsGraph { version: CACHE_VERSION, graph: HashMap::new() };
-        graph.graph.insert("target.py".to_string(), FileImports { imports: vec![] });
+        let mut graph = DepsGraph { version: CACHE_VERSION, fingerprint: String::new(), graph: HashMap::new() };
+        graph.graph.insert("target.py".to_string(), fi(vec![]));
         // user.py has two separate import statements from target.py
-        graph.graph.insert("user.py".to_string(), FileImports {
-            imports: vec![
-                ImportInfo { path: "target.py".to_string(), symbols: vec!["A".to_string()], external: false },
-                ImportInfo { path: "target.py".to_string(), symbols: vec!["B".to_string()], external: false },
-            ],
-        });
+        graph.graph.insert("user.py".to_string(), fi(vec![
+            ImportInfo { path: "target.py".to_string(), symbols: vec!["A".to_string()], external: false },
+            ImportInfo { path: "target.py".to_string(), symbols: vec!["B".to_string()], external: false },
+        ]));
 
         let out = query_deps(&graph, "target.py", 1);
         assert!(out.contains("A"), "should include symbol A: {out}");
@@ -1494,14 +1508,14 @@ mod tests {
 
     #[test]
     fn query_deps_depth_2_shows_transitive() {
-        let mut graph = DepsGraph { version: CACHE_VERSION, graph: HashMap::new() };
-        graph.graph.insert("a.py".to_string(), FileImports { imports: vec![] });
-        graph.graph.insert("b.py".to_string(), FileImports {
-            imports: vec![ImportInfo { path: "a.py".to_string(), symbols: vec!["X".to_string()], external: false }],
-        });
-        graph.graph.insert("c.py".to_string(), FileImports {
-            imports: vec![ImportInfo { path: "b.py".to_string(), symbols: vec!["Y".to_string()], external: false }],
-        });
+        let mut graph = DepsGraph { version: CACHE_VERSION, fingerprint: String::new(), graph: HashMap::new() };
+        graph.graph.insert("a.py".to_string(), fi(vec![]));
+        graph.graph.insert("b.py".to_string(), fi(vec![
+            ImportInfo { path: "a.py".to_string(), symbols: vec!["X".to_string()], external: false },
+        ]));
+        graph.graph.insert("c.py".to_string(), fi(vec![
+            ImportInfo { path: "b.py".to_string(), symbols: vec!["Y".to_string()], external: false },
+        ]));
 
         let out = query_deps(&graph, "a.py", 2);
         assert!(out.contains("b.py"), "depth 1: b.py uses a.py: {out}");
@@ -1510,13 +1524,13 @@ mod tests {
 
     #[test]
     fn query_deps_cycle_detection() {
-        let mut graph = DepsGraph { version: CACHE_VERSION, graph: HashMap::new() };
-        graph.graph.insert("a.py".to_string(), FileImports {
-            imports: vec![ImportInfo { path: "b.py".to_string(), symbols: vec![], external: false }],
-        });
-        graph.graph.insert("b.py".to_string(), FileImports {
-            imports: vec![ImportInfo { path: "a.py".to_string(), symbols: vec![], external: false }],
-        });
+        let mut graph = DepsGraph { version: CACHE_VERSION, fingerprint: String::new(), graph: HashMap::new() };
+        graph.graph.insert("a.py".to_string(), fi(vec![
+            ImportInfo { path: "b.py".to_string(), symbols: vec![], external: false },
+        ]));
+        graph.graph.insert("b.py".to_string(), fi(vec![
+            ImportInfo { path: "a.py".to_string(), symbols: vec![], external: false },
+        ]));
 
         let out = query_deps(&graph, "a.py", 3);
         assert!(out.contains("(cycle)"), "should detect cycle: {out}");
@@ -1524,11 +1538,11 @@ mod tests {
 
     #[test]
     fn query_deps_depth_header() {
-        let mut graph = DepsGraph { version: CACHE_VERSION, graph: HashMap::new() };
-        graph.graph.insert("a.py".to_string(), FileImports { imports: vec![] });
-        graph.graph.insert("b.py".to_string(), FileImports {
-            imports: vec![ImportInfo { path: "a.py".to_string(), symbols: vec![], external: false }],
-        });
+        let mut graph = DepsGraph { version: CACHE_VERSION, fingerprint: String::new(), graph: HashMap::new() };
+        graph.graph.insert("a.py".to_string(), fi(vec![]));
+        graph.graph.insert("b.py".to_string(), fi(vec![
+            ImportInfo { path: "a.py".to_string(), symbols: vec![], external: false },
+        ]));
 
         let out1 = query_deps(&graph, "a.py", 1);
         assert!(out1.contains("used_by:\n"), "depth 1 has plain header: {out1}");
@@ -1553,16 +1567,14 @@ mod tests {
 
     #[test]
     fn query_deps_truncates_long_symbol_lists() {
-        let mut graph = DepsGraph { version: CACHE_VERSION, graph: HashMap::new() };
+        let mut graph = DepsGraph { version: CACHE_VERSION, fingerprint: String::new(), graph: HashMap::new() };
         let many_symbols: Vec<String> = (1..=10).map(|i| format!("Type{i}")).collect();
-        graph.graph.insert("a.py".to_string(), FileImports {
-            imports: vec![ImportInfo {
-                path: "b.py".to_string(),
-                symbols: many_symbols,
-                external: false,
-            }],
-        });
-        graph.graph.insert("b.py".to_string(), FileImports { imports: vec![] });
+        graph.graph.insert("a.py".to_string(), fi(vec![ImportInfo {
+            path: "b.py".to_string(),
+            symbols: many_symbols,
+            external: false,
+        }]));
+        graph.graph.insert("b.py".to_string(), fi(vec![]));
 
         let out = query_deps(&graph, "a.py", 1);
         assert!(out.contains("... +4 more"), "should truncate long symbol list: {out}");
