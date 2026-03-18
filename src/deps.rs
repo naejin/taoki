@@ -5,6 +5,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tree_sitter::Parser;
 
+use crate::cache::CACHE_VERSION;
 use crate::index::{Language, find_child, node_text};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,9 +26,9 @@ pub struct DepsGraph {
     pub graph: HashMap<String, FileImports>,
 }
 
-pub const DEPS_VERSION: u32 = 2;
 const DEPS_FILE: &str = "deps.json";
 const DEPS_DIR: &str = ".cache/taoki";
+const SYMBOL_TRUNCATE_THRESHOLD: usize = 6;
 
 /// Extract raw imports from source. Returns Vec<(import_path, symbols)>.
 pub fn extract_imports(source: &[u8], lang: Language) -> Vec<(String, Vec<String>)> {
@@ -689,8 +690,17 @@ pub fn build_deps_graph(root: &Path, files: &[PathBuf]) -> DepsGraph {
     }
 
     DepsGraph {
-        version: DEPS_VERSION,
+        version: CACHE_VERSION,
         graph,
+    }
+}
+
+fn format_symbols(symbols: &[String]) -> String {
+    if symbols.len() <= SYMBOL_TRUNCATE_THRESHOLD {
+        symbols.join(", ")
+    } else {
+        let shown: Vec<&str> = symbols.iter().take(SYMBOL_TRUNCATE_THRESHOLD).map(|s| s.as_str()).collect();
+        format!("{}, ... +{} more", shown.join(", "), symbols.len() - SYMBOL_TRUNCATE_THRESHOLD)
     }
 }
 
@@ -720,7 +730,7 @@ pub fn query_deps(graph: &DepsGraph, file: &str, depth: u32) -> String {
         if symbols.is_empty() {
             out.push_str(&format!("  {path}\n"));
         } else {
-            out.push_str(&format!("  {path} ({})\n", symbols.join(", ")));
+            out.push_str(&format!("  {path} ({})\n", format_symbols(symbols)));
         }
     }
 
@@ -802,7 +812,7 @@ fn collect_used_by(
         if symbols.is_empty() {
             out.push_str(&format!("{indent}{user}\n"));
         } else {
-            out.push_str(&format!("{indent}{user} ({})\n", symbols.join(", ")));
+            out.push_str(&format!("{indent}{user} ({})\n", format_symbols(symbols)));
         }
         if current_depth < max_depth {
             visited.insert(user.clone());
@@ -820,7 +830,7 @@ pub fn load_deps_cache(root: &Path) -> Option<DepsGraph> {
     let path = deps_cache_path(root);
     let data = std::fs::read_to_string(&path).ok()?;
     let graph: DepsGraph = serde_json::from_str(&data).ok()?;
-    if graph.version != DEPS_VERSION {
+    if graph.version != CACHE_VERSION {
         return None;
     }
     Some(graph)
@@ -1201,7 +1211,7 @@ mod tests {
     #[test]
     fn query_deps_dedup_internal() {
         let mut graph = DepsGraph {
-            version: DEPS_VERSION,
+            version: CACHE_VERSION,
             graph: std::collections::HashMap::new(),
         };
         graph.graph.insert(
@@ -1450,7 +1460,7 @@ mod tests {
 
     #[test]
     fn query_deps_renders_symbols() {
-        let mut graph = DepsGraph { version: DEPS_VERSION, graph: HashMap::new() };
+        let mut graph = DepsGraph { version: CACHE_VERSION, graph: HashMap::new() };
         graph.graph.insert("a.py".to_string(), FileImports {
             imports: vec![ImportInfo {
                 path: "b.py".to_string(),
@@ -1466,7 +1476,7 @@ mod tests {
 
     #[test]
     fn query_deps_used_by_merges_symbols_from_multiple_imports() {
-        let mut graph = DepsGraph { version: DEPS_VERSION, graph: HashMap::new() };
+        let mut graph = DepsGraph { version: CACHE_VERSION, graph: HashMap::new() };
         graph.graph.insert("target.py".to_string(), FileImports { imports: vec![] });
         // user.py has two separate import statements from target.py
         graph.graph.insert("user.py".to_string(), FileImports {
@@ -1484,7 +1494,7 @@ mod tests {
 
     #[test]
     fn query_deps_depth_2_shows_transitive() {
-        let mut graph = DepsGraph { version: DEPS_VERSION, graph: HashMap::new() };
+        let mut graph = DepsGraph { version: CACHE_VERSION, graph: HashMap::new() };
         graph.graph.insert("a.py".to_string(), FileImports { imports: vec![] });
         graph.graph.insert("b.py".to_string(), FileImports {
             imports: vec![ImportInfo { path: "a.py".to_string(), symbols: vec!["X".to_string()], external: false }],
@@ -1500,7 +1510,7 @@ mod tests {
 
     #[test]
     fn query_deps_cycle_detection() {
-        let mut graph = DepsGraph { version: DEPS_VERSION, graph: HashMap::new() };
+        let mut graph = DepsGraph { version: CACHE_VERSION, graph: HashMap::new() };
         graph.graph.insert("a.py".to_string(), FileImports {
             imports: vec![ImportInfo { path: "b.py".to_string(), symbols: vec![], external: false }],
         });
@@ -1514,7 +1524,7 @@ mod tests {
 
     #[test]
     fn query_deps_depth_header() {
-        let mut graph = DepsGraph { version: DEPS_VERSION, graph: HashMap::new() };
+        let mut graph = DepsGraph { version: CACHE_VERSION, graph: HashMap::new() };
         graph.graph.insert("a.py".to_string(), FileImports { imports: vec![] });
         graph.graph.insert("b.py".to_string(), FileImports {
             imports: vec![ImportInfo { path: "a.py".to_string(), symbols: vec![], external: false }],
@@ -1525,5 +1535,38 @@ mod tests {
 
         let out2 = query_deps(&graph, "a.py", 2);
         assert!(out2.contains("used_by (depth=2):"), "depth 2 has annotated header: {out2}");
+    }
+
+    #[test]
+    fn format_symbols_below_threshold() {
+        let syms: Vec<String> = (1..=6).map(|i| format!("Sym{i}")).collect();
+        let out = format_symbols(&syms);
+        assert_eq!(out, "Sym1, Sym2, Sym3, Sym4, Sym5, Sym6");
+    }
+
+    #[test]
+    fn format_symbols_above_threshold() {
+        let syms: Vec<String> = (1..=10).map(|i| format!("Sym{i}")).collect();
+        let out = format_symbols(&syms);
+        assert_eq!(out, "Sym1, Sym2, Sym3, Sym4, Sym5, Sym6, ... +4 more");
+    }
+
+    #[test]
+    fn query_deps_truncates_long_symbol_lists() {
+        let mut graph = DepsGraph { version: CACHE_VERSION, graph: HashMap::new() };
+        let many_symbols: Vec<String> = (1..=10).map(|i| format!("Type{i}")).collect();
+        graph.graph.insert("a.py".to_string(), FileImports {
+            imports: vec![ImportInfo {
+                path: "b.py".to_string(),
+                symbols: many_symbols,
+                external: false,
+            }],
+        });
+        graph.graph.insert("b.py".to_string(), FileImports { imports: vec![] });
+
+        let out = query_deps(&graph, "a.py", 1);
+        assert!(out.contains("... +4 more"), "should truncate long symbol list: {out}");
+        assert!(out.contains("Type1"), "should show first symbols: {out}");
+        assert!(!out.contains("Type7"), "should not show symbols past threshold: {out}");
     }
 }

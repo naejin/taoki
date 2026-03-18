@@ -6,6 +6,7 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::cache::CACHE_VERSION;
 use crate::codemap;
 use crate::index;
 
@@ -13,7 +14,6 @@ thread_local! {
     static INDEX_CACHE: RefCell<HashMap<PathBuf, (String, String)>> = RefCell::new(HashMap::new());
 }
 
-const XRAY_CACHE_VERSION: u32 = 1;
 const XRAY_CACHE_DIR: &str = ".cache/taoki";
 const XRAY_CACHE_FILE: &str = "xray.json";
 
@@ -60,10 +60,10 @@ fn load_xray_cache(root: &Path) -> XrayDiskCache {
 
     let result = match std::fs::read_to_string(&path) {
         Ok(data) => match serde_json::from_str::<XrayDiskCache>(&data) {
-            Ok(c) if c.version == XRAY_CACHE_VERSION => c,
-            _ => XrayDiskCache { version: XRAY_CACHE_VERSION, files: HashMap::new() },
+            Ok(c) if c.version == CACHE_VERSION => c,
+            _ => XrayDiskCache { version: CACHE_VERSION, files: HashMap::new() },
         },
-        Err(_) => XrayDiskCache { version: XRAY_CACHE_VERSION, files: HashMap::new() },
+        Err(_) => XrayDiskCache { version: CACHE_VERSION, files: HashMap::new() },
     };
     if let Some(f) = _lock_guard {
         let _ = f.unlock();
@@ -97,10 +97,10 @@ fn upsert_xray_cache(root: &Path, key: String, entry: XrayDiskEntry) {
     // Load current cache under the exclusive lock
     let mut cache = match std::fs::read_to_string(&path) {
         Ok(data) => match serde_json::from_str::<XrayDiskCache>(&data) {
-            Ok(c) if c.version == XRAY_CACHE_VERSION => c,
-            _ => XrayDiskCache { version: XRAY_CACHE_VERSION, files: HashMap::new() },
+            Ok(c) if c.version == CACHE_VERSION => c,
+            _ => XrayDiskCache { version: CACHE_VERSION, files: HashMap::new() },
         },
-        Err(_) => XrayDiskCache { version: XRAY_CACHE_VERSION, files: HashMap::new() },
+        Err(_) => XrayDiskCache { version: CACHE_VERSION, files: HashMap::new() },
     };
     cache.files.insert(key, entry);
     if let Ok(json) = serde_json::to_string_pretty(&cache) {

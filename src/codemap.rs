@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
+use crate::cache::CACHE_VERSION;
 use crate::index::{self, Language};
 
 #[derive(Debug, thiserror::Error)]
@@ -31,7 +32,6 @@ struct CacheEntry {
     tags: Vec<String>,
 }
 
-const CACHE_VERSION: u32 = 1;
 const CACHE_DIR: &str = ".cache/taoki";
 const CACHE_FILE: &str = "radar.json";
 const GROUPING_THRESHOLD: usize = 100;
