@@ -54,7 +54,7 @@ trap 'rm -rf "$TMPDIR_DL"' EXIT
 URL="https://github.com/${REPO}/releases/download/${VERSION}/${ARTIFACT}"
 if ! curl -fsSL -o "$TMPDIR_DL/$ARTIFACT" "$URL" 2>/dev/null; then
   echo "Error: failed to download taoki binary from ${URL}" >&2
-  echo "Install manually: curl -fsSL https://raw.githubusercontent.com/${REPO}/master/scripts/install.sh -o /tmp/taoki-install.sh && bash /tmp/taoki-install.sh" >&2
+  echo "Install manually: curl -fsSL https://github.com/${REPO}/releases/latest/download/install.sh -o /tmp/taoki-install.sh && bash /tmp/taoki-install.sh" >&2
   exit 1
 fi
 

@@ -91,13 +91,13 @@ The installer detects your coding agent (Claude Code, Gemini CLI, or OpenCode) a
 **Linux / macOS:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.sh -o /tmp/taoki-install.sh && bash /tmp/taoki-install.sh
+curl -fsSL https://github.com/naejin/taoki/releases/latest/download/install.sh -o /tmp/taoki-install.sh && bash /tmp/taoki-install.sh
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-irm https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.ps1 -OutFile $env:TEMP\taoki-install.ps1; & $env:TEMP\taoki-install.ps1
+irm https://github.com/naejin/taoki/releases/latest/download/install.ps1 -OutFile $env:TEMP\taoki-install.ps1; & $env:TEMP\taoki-install.ps1
 ```
 
 > The installer requires a TTY for the interactive agent selection prompt — that's why the script is downloaded first rather than piped directly.
@@ -170,7 +170,7 @@ Re-run the install script to upgrade to the latest release.
 ## Uninstall
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/naejin/taoki/master/scripts/uninstall.sh | bash
+curl -fsSL https://github.com/naejin/taoki/releases/latest/download/uninstall.sh | bash
 ```
 
 Or manually: `rm -rf ~/.claude/plugins/taoki`

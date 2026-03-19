@@ -276,10 +276,17 @@ jobs:
         with:
           path: artifacts
 
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts
+
       - name: Collect release files
         run: |
           mkdir release
           find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} release/ \;
+          cp scripts/install.sh release/install.sh
+          cp scripts/install.ps1 release/install.ps1
+          cp scripts/uninstall.sh release/uninstall.sh
 
       - name: Generate checksums
         run: |

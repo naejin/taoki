@@ -815,7 +815,7 @@ function Main {
         Write-Host "taoki: Interactive terminal required for the installer TUI."
         Write-Host ""
         Write-Host "Run this instead:"
-        Write-Host "  Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.ps1' -OutFile `$env:TEMP\taoki-install.ps1; & `$env:TEMP\taoki-install.ps1"
+        Write-Host "  Invoke-WebRequest -Uri 'https://github.com/naejin/taoki/releases/latest/download/install.ps1' -OutFile `$env:TEMP\taoki-install.ps1; & `$env:TEMP\taoki-install.ps1"
         exit 1
     }
 

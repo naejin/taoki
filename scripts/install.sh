@@ -781,7 +781,7 @@ main() {
     echo "taoki: Interactive terminal required for the installer TUI."
     echo ""
     echo "Run this instead:"
-    echo "  curl -fsSL https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.sh -o /tmp/taoki-install.sh && bash /tmp/taoki-install.sh"
+    echo "  curl -fsSL https://github.com/naejin/taoki/releases/latest/download/install.sh -o /tmp/taoki-install.sh && bash /tmp/taoki-install.sh"
     exit 1
   fi
 

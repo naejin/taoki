@@ -1,49 +1,28 @@
-# Taoki v1.3.1 Release Notes
+# Taoki v1.3.2 Release Notes
 
 ## Highlights
 
-Adds automated release validation to the CI pipeline, ensuring every release artifact is tested before it reaches users. Includes a local pre-release script for catching issues before tagging.
+Install scripts are now served from GitHub Releases instead of `raw.githubusercontent.com`, eliminating CDN caching issues that caused stale install scripts on updates.
 
 ## Changes
 
-### CI Release Validation
+### Install URLs use GitHub Releases
 
-The release pipeline now gates artifact publication on two new validation stages:
+- Install scripts (`install.sh`, `install.ps1`, `uninstall.sh`) are now published as standalone GitHub Release assets alongside the platform binaries.
+- The install URL is now `https://github.com/naejin/taoki/releases/latest/download/install.sh` -- a 302 redirect that always resolves to the latest release's asset. No more stale CDN cache.
+- All documented install commands updated across README, CLAUDE.md, RELEASE_NOTES, and the scripts' own fallback messages.
+- The release pipeline (`release.yml`) now checks out the `scripts/` directory and copies the install scripts into the release artifacts.
 
-- **Per-platform smoke test** -- after each build, the binary is verified on its native platform:
-  - `--version` output matches the git tag
-  - MCP `initialize` handshake succeeds (server identifies as taoki)
-  - `tools/list` returns all 3 tools (radar, ripple, xray)
-- **Artifact structure validation** -- after all builds complete, every archive is extracted and checked:
-  - All 13 required files present (plugin.json, commands, skills, hooks, scripts)
-  - `plugin.json` version matches the release tag
-  - No `.mcp.json` leaked into the archive
-- The **Create Release** job now depends on both build and validate passing -- a broken artifact can no longer reach users.
+**Previous behavior:** `raw.githubusercontent.com` aggressively caches files via CDN, so re-running the install command could serve a stale script for minutes after a release.
 
-### Local Pre-Release Script
-
-New `scripts/prerelease.sh` for running validation before tagging:
-
-```bash
-./scripts/prerelease.sh
-```
-
-Checks: version consistency (Cargo.toml, plugin.json, git tag), all release files present, shell script syntax, cargo clippy + test, MCP protocol smoke test, plugin.json schema.
-
-## Stats
-
-- **187 unit tests**, 0 clippy warnings
-- **5 build targets** validated per release (linux x86_64/aarch64, macos x86_64/aarch64, windows x86_64)
-- **13 required files** checked per artifact
+**New behavior:** `/releases/latest/download/` is a redirect, not a static file. The redirect target is versioned and immutable -- every release gets the exact script that shipped with it.
 
 ## Upgrading
 
-Re-run the install script:
-
 ```bash
-curl -fsSL https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.sh -o /tmp/taoki-install.sh && bash /tmp/taoki-install.sh
+curl -fsSL https://github.com/naejin/taoki/releases/latest/download/install.sh -o /tmp/taoki-install.sh && bash /tmp/taoki-install.sh
 ```
 
 Or if installed via marketplace: `claude plugin install taoki@monet-plugins`
 
-No cache or protocol changes -- fully compatible with v1.3.0.
+No cache or protocol changes -- fully compatible with v1.3.1.
