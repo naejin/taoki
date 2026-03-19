@@ -19,9 +19,17 @@ BIN_PATH="$BIN_DIR/taoki"
 # -----------------------------------------------------------------------------
 
 if [ -t 1 ]; then
-  BOLD='\033[1m' GREEN='\033[0;32m' RED='\033[0;31m' YELLOW='\033[0;33m' RESET='\033[0m'
+  BOLD='\033[1m' DIM='\033[2m'
+  RED='\033[0;31m' GREEN='\033[0;32m' YELLOW='\033[0;33m'
+  CYAN='\033[36m' BCYAN='\033[96m'
+  GRAY='\033[90m' WHITE='\033[97m'
+  RESET='\033[0m'
 else
-  BOLD='' GREEN='' RED='' YELLOW='' RESET=''
+  BOLD='' DIM=''
+  RED='' GREEN='' YELLOW=''
+  CYAN='' BCYAN=''
+  GRAY='' WHITE=''
+  RESET=''
 fi
 
 info()  { echo -e "${BOLD}taoki:${RESET} $1"; }
@@ -33,14 +41,32 @@ error() { echo -e "${RED}error:${RESET} $1" >&2; }
 # -----------------------------------------------------------------------------
 
 # State
-SELECTED_CLAUDE=1   # default on
+SELECTED_CLAUDE=0
 SELECTED_GEMINI=0
 SELECTED_OPENCODE=0
 SCOPE="global"
-CURSOR=0            # 0=Claude, 1=Gemini, 2=OpenCode
+CURSOR=0
+
+# Detection
+HAS_CLAUDE=0
+HAS_GEMINI=0
+HAS_OPENCODE=0
 
 OLD_STTY=""
 IN_TUI=0
+
+detect_agents() {
+  command -v claude >/dev/null 2>&1 && HAS_CLAUDE=1
+  command -v gemini >/dev/null 2>&1 && HAS_GEMINI=1
+  command -v opencode >/dev/null 2>&1 && HAS_OPENCODE=1
+  # Pre-select detected agents; default to Claude if none detected
+  SELECTED_CLAUDE=$HAS_CLAUDE
+  SELECTED_GEMINI=$HAS_GEMINI
+  SELECTED_OPENCODE=$HAS_OPENCODE
+  if [ "$SELECTED_CLAUDE" = "0" ] && [ "$SELECTED_GEMINI" = "0" ] && [ "$SELECTED_OPENCODE" = "0" ]; then
+    SELECTED_CLAUDE=1
+  fi
+}
 
 tui_setup() {
   OLD_STTY="$(stty -g 2>/dev/null || true)"
@@ -69,98 +95,115 @@ trap cleanup_on_exit EXIT
 
 draw_multiselect() {
   local labels=("Claude Code" "Gemini CLI" "OpenCode")
+  local descs=("marketplace plugin" "binary + mcp server" "binary + mcp server")
   local selected=("$SELECTED_CLAUDE" "$SELECTED_GEMINI" "$SELECTED_OPENCODE")
+  local detected=("$HAS_CLAUDE" "$HAS_GEMINI" "$HAS_OPENCODE")
 
-  # Move cursor up to redraw (11 lines for the box)
+  # Move cursor up to redraw (13 lines)
   if [ "${FIRST_DRAW:-1}" = "0" ]; then
-    printf '\033[11A'
+    printf '\033[13A'
   fi
   FIRST_DRAW=0
 
-  printf ' \033[1m┌─────────────────────────────────────────┐\033[0m\r\n'
-  printf ' \033[1m│\033[0m  Taoki — Structural Code Intelligence   \033[1m│\033[0m\r\n'
-  printf ' \033[1m│\033[0m                                         \033[1m│\033[0m\r\n'
-  printf ' \033[1m│\033[0m  Select coding agents to install:       \033[1m│\033[0m\r\n'
-  printf ' \033[1m│\033[0m                                         \033[1m│\033[0m\r\n'
+  # Logo + title
+  printf "\r\n"
+  printf "   ${GRAY}░░${CYAN}▒▒${BCYAN}▓▓▓${CYAN}▒▒${GRAY}░░${RESET}     ${BOLD}taoki${RESET}\r\n"
+  printf "  ${CYAN}▒▒${BCYAN}▓▓${WHITE}█████${BCYAN}▓▓${CYAN}▒▒${RESET}    ${DIM}structural code intelligence${RESET}\r\n"
+  printf "   ${GRAY}░░${CYAN}▒▒${BCYAN}▓▓▓${CYAN}▒▒${GRAY}░░${RESET}     ${DIM}radar · xray · ripple${RESET}\r\n"
+  printf "\r\n"
 
+  # Heading
+  printf "  Select coding agents to install:\r\n"
+  printf "\r\n"
+
+  # Agent rows
   for i in 0 1 2; do
-    local check=" "
-    if [ "${selected[$i]}" = "1" ]; then check="x"; fi
-    local pointer="  "
-    if [ "$CURSOR" = "$i" ]; then pointer="> "; fi
+    local ptr="  "
+    local icon="${GRAY}○${RESET}"
+
+    if [ "$CURSOR" = "$i" ]; then
+      ptr="${BCYAN}❯${RESET} "
+    fi
+    if [ "${selected[$i]}" = "1" ]; then
+      icon="${GREEN}●${RESET}"
+    fi
+
     # Pad label to fixed width
     local label="${labels[$i]}"
-    local pad_len=$(( 25 - ${#label} ))
+    local pad_len=$(( 20 - ${#label} ))
     local padding=""
     local p
     for (( p=0; p<pad_len; p++ )); do padding="$padding "; done
-    printf ' \033[1m│\033[0m  %s[%s] %s%s\033[1m│\033[0m\r\n' "$pointer" "$check" "$label" "$padding"
+
+    # Detection indicator
+    local detect=""
+    if [ "${detected[$i]}" = "1" ]; then
+      detect="  ${GREEN}✓${RESET}"
+    fi
+
+    printf "  %b%b %s%s${DIM}%s${RESET}%b\r\n" "$ptr" "$icon" "$label" "$padding" "${descs[$i]}" "$detect"
   done
 
-  printf ' \033[1m│\033[0m                                         \033[1m│\033[0m\r\n'
-  printf ' \033[1m│\033[0m  SPACE toggle  ENTER confirm  ESC quit  \033[1m│\033[0m\r\n'
-  printf ' \033[1m└─────────────────────────────────────────┘\033[0m\r\n'
+  # Footer
+  printf "\r\n"
+  printf "  ${DIM}↑↓ navigate   space toggle   enter confirm   esc quit${RESET}\r\n"
+  printf "\r\n"
 }
 
 draw_scope() {
   local scope_cursor="$1"
 
   if [ "${SCOPE_FIRST_DRAW:-1}" = "0" ]; then
-    printf '\033[8A'
+    printf '\033[7A'
   fi
   SCOPE_FIRST_DRAW=0
 
   local global_ptr="  " project_ptr="  "
-  if [ "$scope_cursor" = "0" ]; then global_ptr="> "; fi
-  if [ "$scope_cursor" = "1" ]; then project_ptr="> "; fi
+  if [ "$scope_cursor" = "0" ]; then global_ptr="${BCYAN}❯${RESET} "; fi
+  if [ "$scope_cursor" = "1" ]; then project_ptr="${BCYAN}❯${RESET} "; fi
 
-  printf ' \033[1m┌─────────────────────────────────────────┐\033[0m\r\n'
-  printf ' \033[1m│\033[0m  Install scope:                         \033[1m│\033[0m\r\n'
-  printf ' \033[1m│\033[0m                                         \033[1m│\033[0m\r\n'
-  printf ' \033[1m│\033[0m  %sGlobal (all projects)                \033[1m│\033[0m\r\n' "$global_ptr"
-  printf ' \033[1m│\033[0m  %sProject (this directory only)        \033[1m│\033[0m\r\n' "$project_ptr"
-  printf ' \033[1m│\033[0m                                         \033[1m│\033[0m\r\n'
-  printf ' \033[1m│\033[0m  ENTER confirm  ESC back                \033[1m│\033[0m\r\n'
-  printf ' \033[1m└─────────────────────────────────────────┘\033[0m\r\n'
+  printf "\r\n"
+  printf "  Install scope:\r\n"
+  printf "\r\n"
+  printf "  %b Global               ${DIM}all projects${RESET}\r\n" "$global_ptr"
+  printf "  %b Project              ${DIM}current directory only${RESET}\r\n" "$project_ptr"
+  printf "\r\n"
+  printf "  ${DIM}↑↓ navigate   enter confirm   esc back${RESET}\r\n"
 }
 
 read_key() {
-  # Read a single byte using dd (works in raw mode across bash/zsh/sh)
-  local byte
-  byte=$(dd bs=1 count=1 2>/dev/null | xxd -p 2>/dev/null || true)
+  local char
+  IFS= read -rsn1 char
 
-  if [ "$byte" = "1b" ]; then
-    # Escape byte — try to read arrow key sequence with a short timeout.
-    # Bare ESC produces no follow-up bytes; timeout ensures we don't block.
-    # Use dd in a background process with kill for portability (macOS lacks `timeout`).
-    local seq tmpfile
-    tmpfile=$(mktemp)
-    dd bs=1 count=2 2>/dev/null > "$tmpfile" &
-    local dd_pid=$!
-    sleep 0.1
-    if kill -0 "$dd_pid" 2>/dev/null; then
-      kill "$dd_pid" 2>/dev/null
-      wait "$dd_pid" 2>/dev/null || true
-    fi
-    seq=$(xxd -p < "$tmpfile" 2>/dev/null || true)
-    rm -f "$tmpfile"
-    case "$seq" in
-      5b41) echo "UP" ;;
-      5b42) echo "DOWN" ;;
-      *)    echo "ESC" ;;
-    esac
-  elif [ "$byte" = "20" ]; then
-    echo "SPACE"
-  elif [ "$byte" = "0d" ] || [ "$byte" = "0a" ]; then
-    echo "ENTER"
-  elif [ "$byte" = "03" ]; then
-    echo "ESC"  # Ctrl-C
-  else
-    echo "OTHER"
-  fi
+  case "$char" in
+    $'\x1b')
+      # Escape — try to read arrow key sequence with a short timeout.
+      # Bare ESC produces no follow-up bytes; timeout ensures we don't block.
+      local seq
+      IFS= read -rsn2 -t 0.2 seq || true
+      case "$seq" in
+        '[A') echo "UP" ;;
+        '[B') echo "DOWN" ;;
+        *)    echo "ESC" ;;
+      esac
+      ;;
+    ' ')
+      echo "SPACE"
+      ;;
+    ''|$'\r')
+      echo "ENTER"
+      ;;
+    $'\x03')
+      echo "ESC"  # Ctrl-C
+      ;;
+    *)
+      echo "OTHER"
+      ;;
+  esac
 }
 
 select_agents() {
+  detect_agents
   FIRST_DRAW=1
   tui_setup
 

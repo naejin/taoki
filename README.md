@@ -86,7 +86,7 @@ external:
 
 ### Pre-built binary (recommended)
 
-The installer detects your coding agent (Claude Code, Gemini CLI, or OpenCode) and prompts you to select one if multiple are found.
+The installer auto-detects installed coding agents (Claude Code, Gemini CLI, OpenCode), pre-selects them, and lets you toggle before confirming.
 
 **Linux / macOS:**
 
@@ -201,7 +201,7 @@ Tested against 15 open-source projects (run `cargo run --bin benchmark --feature
 
 **Known limitation:** deno fails on empty skeletons due to `.d.ts` ambient declaration files (`declare namespace`, `declare function`). The TypeScript extractor does not yet handle `declare` blocks — these files parse successfully but produce no structural output. Tracked for a future extractor improvement.
 
-*Results from v1.2.0 against pinned commits. Run `cargo run --bin benchmark --features benchmark -- --update-pins` to refresh pins.*
+*Results against pinned commits. Run `cargo run --bin benchmark --features benchmark -- --update-pins` to refresh pins.*
 
 ## License
 

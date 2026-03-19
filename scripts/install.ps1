@@ -40,9 +40,14 @@ public static extern bool SetConsoleMode(IntPtr hConsole, uint dwMode);
 Enable-AnsiSupport
 
 $BOLD = "$ESC[1m"
-$GREEN = "$ESC[0;32m"
+$DIM = "$ESC[2m"
 $RED = "$ESC[0;31m"
+$GREEN = "$ESC[0;32m"
 $YELLOW = "$ESC[0;33m"
+$CYAN = "$ESC[36m"
+$BCYAN = "$ESC[96m"
+$GRAY = "$ESC[90m"
+$WHITE = "$ESC[97m"
 $RESET = "$ESC[0m"
 
 function Write-Info($msg) {
@@ -75,21 +80,43 @@ function Write-Utf8NoBom {
 # 2. TUI functions
 # -----------------------------------------------------------------------------
 
-# Box-drawing characters (PS 5.1 compatible)
-$TL = [char]0x250C  # top-left corner
-$TR = [char]0x2510  # top-right corner
-$BL = [char]0x2514  # bottom-left corner
-$BR = [char]0x2518  # bottom-right corner
-$HZ = [char]0x2500  # horizontal line
-$VT = [char]0x2502  # vertical line
-$HBAR = "$HZ" * 41  # horizontal bar (41 chars wide)
+# Shade characters for logo
+$SH1 = [char]0x2591  # ░
+$SH2 = [char]0x2592  # ▒
+$SH3 = [char]0x2593  # ▓
+$SHF = [char]0x2588  # █
+
+# TUI glyphs
+$PTR = [char]0x276F   # ❯
+$BFILL = [char]0x25CF # ●
+$BEMPTY = [char]0x25CB # ○
+$BCHECK = [char]0x2713 # ✓
+$MDOT = [char]0x00B7   # ·
 
 # State
-$script:SELECTED_CLAUDE = 1    # default on
+$script:SELECTED_CLAUDE = 0
 $script:SELECTED_GEMINI = 0
 $script:SELECTED_OPENCODE = 0
 $script:SCOPE = "global"
-$script:CURSOR = 0             # 0=Claude, 1=Gemini, 2=OpenCode
+$script:CURSOR = 0
+
+# Detection
+$script:HAS_CLAUDE = 0
+$script:HAS_GEMINI = 0
+$script:HAS_OPENCODE = 0
+
+function Detect-Agents {
+    if (Get-Command claude -ErrorAction SilentlyContinue) { $script:HAS_CLAUDE = 1 }
+    if (Get-Command gemini -ErrorAction SilentlyContinue) { $script:HAS_GEMINI = 1 }
+    if (Get-Command opencode -ErrorAction SilentlyContinue) { $script:HAS_OPENCODE = 1 }
+    # Pre-select detected agents; default to Claude if none detected
+    $script:SELECTED_CLAUDE = $script:HAS_CLAUDE
+    $script:SELECTED_GEMINI = $script:HAS_GEMINI
+    $script:SELECTED_OPENCODE = $script:HAS_OPENCODE
+    if ($script:SELECTED_CLAUDE -eq 0 -and $script:SELECTED_GEMINI -eq 0 -and $script:SELECTED_OPENCODE -eq 0) {
+        $script:SELECTED_CLAUDE = 1
+    }
+}
 
 function Hide-Cursor {
     Write-Host "$ESC[?25l" -NoNewline
@@ -103,55 +130,81 @@ function Draw-MultiSelect {
     param([bool]$FirstDraw = $false)
 
     $labels = @("Claude Code", "Gemini CLI", "OpenCode")
+    $descs = @("marketplace plugin", "binary + mcp server", "binary + mcp server")
     $selected = @($script:SELECTED_CLAUDE, $script:SELECTED_GEMINI, $script:SELECTED_OPENCODE)
+    $detected = @($script:HAS_CLAUDE, $script:HAS_GEMINI, $script:HAS_OPENCODE)
 
-    # Move cursor up to redraw (11 lines for the box)
+    # Move cursor up to redraw (13 lines)
     if (-not $FirstDraw) {
-        Write-Host "$ESC[11A" -NoNewline
+        Write-Host "$ESC[13A" -NoNewline
     }
 
-    Write-Host " ${BOLD}${TL}${HBAR}${TR}${RESET}"
-    Write-Host " ${BOLD}${VT}${RESET}  Taoki -- Structural Code Intelligence  ${BOLD}${VT}${RESET}"
-    Write-Host " ${BOLD}${VT}${RESET}                                         ${BOLD}${VT}${RESET}"
-    Write-Host " ${BOLD}${VT}${RESET}  Select coding agents to install:       ${BOLD}${VT}${RESET}"
-    Write-Host " ${BOLD}${VT}${RESET}                                         ${BOLD}${VT}${RESET}"
+    # Logo + title
+    $logoTop = "${SH1}${SH1}"
+    $logoMidOuter = "${SH2}${SH2}"
+    $logoCenter = "${SH3}${SH3}${SH3}"
+    $logoCore = "${SHF}${SHF}${SHF}${SHF}${SHF}"
+    $logoBright = "${SH3}${SH3}"
 
+    Write-Host ""
+    Write-Host "   ${GRAY}${logoTop}${CYAN}${logoMidOuter}${BCYAN}${logoCenter}${CYAN}${logoMidOuter}${GRAY}${logoTop}${RESET}     ${BOLD}taoki${RESET}"
+    Write-Host "  ${CYAN}${logoMidOuter}${BCYAN}${logoBright}${WHITE}${logoCore}${BCYAN}${logoBright}${CYAN}${logoMidOuter}${RESET}    ${DIM}structural code intelligence${RESET}"
+    Write-Host "   ${GRAY}${logoTop}${CYAN}${logoMidOuter}${BCYAN}${logoCenter}${CYAN}${logoMidOuter}${GRAY}${logoTop}${RESET}     ${DIM}radar ${MDOT} xray ${MDOT} ripple${RESET}"
+    Write-Host ""
+
+    # Heading
+    Write-Host "  Select coding agents to install:"
+    Write-Host ""
+
+    # Agent rows
     for ($i = 0; $i -lt 3; $i++) {
-        $check = " "
-        if ($selected[$i] -eq 1) { $check = "x" }
-        $pointer = "  "
-        if ($script:CURSOR -eq $i) { $pointer = "> " }
+        $ptr = "  "
+        $icon = "${GRAY}${BEMPTY}${RESET}"
+
+        if ($script:CURSOR -eq $i) {
+            $ptr = "${BCYAN}${PTR}${RESET} "
+        }
+        if ($selected[$i] -eq 1) {
+            $icon = "${GREEN}${BFILL}${RESET}"
+        }
+
         $label = $labels[$i]
-        $padLen = 25 - $label.Length
+        $padLen = 20 - $label.Length
         $padding = " " * $padLen
-        Write-Host " ${BOLD}${VT}${RESET}  ${pointer}[${check}] ${label}${padding}${BOLD}${VT}${RESET}"
+
+        $detect = ""
+        if ($detected[$i] -eq 1) {
+            $detect = "  ${GREEN}${BCHECK}${RESET}"
+        }
+
+        Write-Host "  ${ptr}${icon} ${label}${padding}${DIM}$($descs[$i])${RESET}${detect}"
     }
 
-    Write-Host " ${BOLD}${VT}${RESET}                                         ${BOLD}${VT}${RESET}"
-    Write-Host " ${BOLD}${VT}${RESET}  SPACE toggle  ENTER confirm  ESC quit  ${BOLD}${VT}${RESET}"
-    Write-Host " ${BOLD}${BL}${HBAR}${BR}${RESET}"
+    # Footer
+    Write-Host ""
+    Write-Host "  ${DIM}$([char]0x2191)$([char]0x2193) navigate   space toggle   enter confirm   esc quit${RESET}"
+    Write-Host ""
 }
 
 function Draw-Scope {
     param([int]$ScopeCursor, [bool]$FirstDraw = $false)
 
     if (-not $FirstDraw) {
-        Write-Host "$ESC[8A" -NoNewline
+        Write-Host "$ESC[7A" -NoNewline
     }
 
     $globalPtr = "  "
     $projectPtr = "  "
-    if ($ScopeCursor -eq 0) { $globalPtr = "> " }
-    if ($ScopeCursor -eq 1) { $projectPtr = "> " }
+    if ($ScopeCursor -eq 0) { $globalPtr = "${BCYAN}${PTR}${RESET} " }
+    if ($ScopeCursor -eq 1) { $projectPtr = "${BCYAN}${PTR}${RESET} " }
 
-    Write-Host " ${BOLD}${TL}${HBAR}${TR}${RESET}"
-    Write-Host " ${BOLD}${VT}${RESET}  Install scope:                         ${BOLD}${VT}${RESET}"
-    Write-Host " ${BOLD}${VT}${RESET}                                         ${BOLD}${VT}${RESET}"
-    Write-Host " ${BOLD}${VT}${RESET}  ${globalPtr}Global (all projects)                ${BOLD}${VT}${RESET}"
-    Write-Host " ${BOLD}${VT}${RESET}  ${projectPtr}Project (this directory only)        ${BOLD}${VT}${RESET}"
-    Write-Host " ${BOLD}${VT}${RESET}                                         ${BOLD}${VT}${RESET}"
-    Write-Host " ${BOLD}${VT}${RESET}  ENTER confirm  ESC back                ${BOLD}${VT}${RESET}"
-    Write-Host " ${BOLD}${BL}${HBAR}${BR}${RESET}"
+    Write-Host ""
+    Write-Host "  Install scope:"
+    Write-Host ""
+    Write-Host "  ${globalPtr}Global               ${DIM}all projects${RESET}"
+    Write-Host "  ${projectPtr}Project              ${DIM}current directory only${RESET}"
+    Write-Host ""
+    Write-Host "  ${DIM}$([char]0x2191)$([char]0x2193) navigate   enter confirm   esc back${RESET}"
 }
 
 function Read-Key {
@@ -168,6 +221,7 @@ function Read-Key {
 }
 
 function Select-Agents {
+    Detect-Agents
     Hide-Cursor
 
     Draw-MultiSelect -FirstDraw $true
