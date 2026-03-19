@@ -373,7 +373,10 @@ function Upsert-JsonMcp {
     $data[$ParentKey][$ChildKey] = $Value
 
     $json = ConvertTo-Json $data -Depth 10
-    Set-Content -Path $File -Value $json -Encoding UTF8
+    # Atomic write: temp file + move prevents data loss on interrupt
+    $tmpFile = "${File}.tmp.$PID"
+    Set-Content -Path $tmpFile -Value $json -Encoding UTF8
+    Move-Item -Path $tmpFile -Destination $File -Force
     return $true
 }
 
@@ -427,7 +430,10 @@ function Upsert-JsonArray {
     }
 
     $json = ConvertTo-Json $data -Depth 10
-    Set-Content -Path $File -Value $json -Encoding UTF8
+    # Atomic write: temp file + move prevents data loss on interrupt
+    $tmpFile = "${File}.tmp.$PID"
+    Set-Content -Path $tmpFile -Value $json -Encoding UTF8
+    Move-Item -Path $tmpFile -Destination $File -Force
     return $true
 }
 
@@ -613,11 +619,16 @@ function Ensure-Binary {
     }
 
     $version = $null
-    try { $version = Get-LatestVersion } catch { }
-    if (-not $version) {
-        Write-Err "Could not determine latest taoki version from GitHub."
-        Write-Err "Check your internet connection and try again."
-        return $false
+    if ($env:TAOKI_VERSION) {
+        $version = $env:TAOKI_VERSION
+        Write-Info "Using pinned version: $version"
+    } else {
+        try { $version = Get-LatestVersion } catch { }
+        if (-not $version) {
+            Write-Err "Could not determine latest taoki version from GitHub."
+            Write-Err "If rate-limited, set `$env:TAOKI_VERSION='v1.2.0' to specify a version manually."
+            return $false
+        }
     }
 
     # Windows only: x86_64
@@ -699,8 +710,8 @@ function Install-GeminiCli {
     $instructionDest = Join-Path $geminiDir "taoki.md"
     $geminiMd = Join-Path $geminiDir "GEMINI.md"
 
-    # MCP config
-    $mcpValue = [ordered]@{ command = "taoki"; args = @() }
+    # MCP config — use absolute path so taoki works even if $BIN_DIR is not on PATH
+    $mcpValue = [ordered]@{ command = $BIN_PATH; args = @() }
     if (Upsert-JsonMcp -File $settingsFile -ParentKey "mcpServers" -ChildKey "taoki" -Value $mcpValue) {
         Write-Info "MCP config written to $settingsFile"
     }
@@ -766,8 +777,8 @@ function Install-OpenCode {
         Write-Info "Target directory: $(Get-Location)"
     }
 
-    # MCP config (OpenCode format differs from Gemini)
-    $mcpValue = [ordered]@{ type = "local"; command = @("taoki") }
+    # MCP config (OpenCode format differs from Gemini) — use absolute path
+    $mcpValue = [ordered]@{ type = "local"; command = @($BIN_PATH) }
     if (Upsert-JsonMcp -File $configFile -ParentKey "mcp" -ChildKey "taoki" -Value $mcpValue) {
         Write-Info "MCP config written to $configFile"
     }

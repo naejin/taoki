@@ -130,9 +130,20 @@ read_key() {
   byte=$(dd bs=1 count=1 2>/dev/null | xxd -p 2>/dev/null || true)
 
   if [ "$byte" = "1b" ]; then
-    # Escape byte — read 2 more for arrow key sequences
-    local seq
-    seq=$(dd bs=1 count=2 2>/dev/null | xxd -p 2>/dev/null || true)
+    # Escape byte — try to read arrow key sequence with a short timeout.
+    # Bare ESC produces no follow-up bytes; timeout ensures we don't block.
+    # Use dd in a background process with kill for portability (macOS lacks `timeout`).
+    local seq tmpfile
+    tmpfile=$(mktemp)
+    dd bs=1 count=2 2>/dev/null > "$tmpfile" &
+    local dd_pid=$!
+    sleep 0.1
+    if kill -0 "$dd_pid" 2>/dev/null; then
+      kill "$dd_pid" 2>/dev/null
+      wait "$dd_pid" 2>/dev/null || true
+    fi
+    seq=$(xxd -p < "$tmpfile" 2>/dev/null || true)
+    rm -f "$tmpfile"
     case "$seq" in
       5b41) echo "UP" ;;
       5b42) echo "DOWN" ;;
@@ -362,7 +373,9 @@ print(json.dumps(data, indent=2))
     return 1
   fi
 
-  echo "$result" > "$file"
+  # Atomic write: temp file + mv prevents data loss on interrupt
+  local tmpfile="${file}.tmp.$$"
+  echo "$result" > "$tmpfile" && mv "$tmpfile" "$file"
   return 0
 }
 
@@ -424,7 +437,9 @@ print(json.dumps(data, indent=2))
     return 1
   fi
 
-  echo "$result" > "$file"
+  # Atomic write: temp file + mv prevents data loss on interrupt
+  local tmpfile="${file}.tmp.$$"
+  echo "$result" > "$tmpfile" && mv "$tmpfile" "$file"
   return 0
 }
 
@@ -575,11 +590,16 @@ ensure_binary() {
   fi
 
   local version
-  version=$(get_latest_version 2>/dev/null || true)
-  if [ -z "$version" ]; then
-    error "Could not determine latest taoki version from GitHub."
-    error "Check your internet connection and try again."
-    return 1
+  if [ -n "${TAOKI_VERSION:-}" ]; then
+    version="$TAOKI_VERSION"
+    info "Using pinned version: $version"
+  else
+    version=$(get_latest_version 2>/dev/null || true)
+    if [ -z "$version" ]; then
+      error "Could not determine latest taoki version from GitHub."
+      error "If rate-limited, set TAOKI_VERSION=v1.2.0 to specify a version manually."
+      return 1
+    fi
   fi
 
   local os arch platform
@@ -669,8 +689,8 @@ install_gemini_cli() {
   instruction_dest="$gemini_dir/taoki.md"
   gemini_md="$gemini_dir/GEMINI.md"
 
-  # MCP config
-  if upsert_json_mcp "$settings_file" "mcpServers" "taoki" '{"command":"taoki","args":[]}'; then
+  # MCP config — use absolute path so taoki works even if $BIN_DIR is not on PATH
+  if upsert_json_mcp "$settings_file" "mcpServers" "taoki" "{\"command\":\"$BIN_PATH\",\"args\":[]}"; then
     info "MCP config written to $settings_file"
   fi
 
@@ -729,8 +749,8 @@ install_opencode() {
     info "Target directory: $(pwd)"
   fi
 
-  # MCP config (OpenCode format differs from Gemini)
-  if upsert_json_mcp "$config_file" "mcp" "taoki" '{"type":"local","command":["taoki"]}'; then
+  # MCP config (OpenCode format differs from Gemini) — use absolute path
+  if upsert_json_mcp "$config_file" "mcp" "taoki" "{\"type\":\"local\",\"command\":[\"$BIN_PATH\"]}"; then
     info "MCP config written to $config_file"
   fi
 
