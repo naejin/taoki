@@ -99,17 +99,16 @@ draw_multiselect() {
   local selected=("$SELECTED_CLAUDE" "$SELECTED_GEMINI" "$SELECTED_OPENCODE")
   local detected=("$HAS_CLAUDE" "$HAS_GEMINI" "$HAS_OPENCODE")
 
-  # Move cursor up to redraw (13 lines)
+  # Move cursor up to redraw (12 lines)
   if [ "${FIRST_DRAW:-1}" = "0" ]; then
-    printf '\033[13A'
+    printf '\033[12A'
   fi
   FIRST_DRAW=0
 
-  # Logo + title
+  # Title
   printf "\r\n"
-  printf "   ${GRAY}░░${CYAN}▒▒${BCYAN}▓▓▓${CYAN}▒▒${GRAY}░░${RESET}     ${BOLD}taoki${RESET}\r\n"
-  printf "  ${CYAN}▒▒${BCYAN}▓▓${WHITE}█████${BCYAN}▓▓${CYAN}▒▒${RESET}    ${DIM}structural code intelligence${RESET}\r\n"
-  printf "   ${GRAY}░░${CYAN}▒▒${BCYAN}▓▓▓${CYAN}▒▒${GRAY}░░${RESET}     ${DIM}radar · xray · ripple${RESET}\r\n"
+  printf "  ${BOLD}taoki${RESET}  ${DIM}structural code intelligence${RESET}\r\n"
+  printf "  ${DIM}radar · xray · ripple${RESET}\r\n"
   printf "\r\n"
 
   # Heading

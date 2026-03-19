@@ -80,12 +80,6 @@ function Write-Utf8NoBom {
 # 2. TUI functions
 # -----------------------------------------------------------------------------
 
-# Shade characters for logo
-$SH1 = [char]0x2591  # ░
-$SH2 = [char]0x2592  # ▒
-$SH3 = [char]0x2593  # ▓
-$SHF = [char]0x2588  # █
-
 # TUI glyphs
 $PTR = [char]0x276F   # ❯
 $BFILL = [char]0x25CF # ●
@@ -134,22 +128,15 @@ function Draw-MultiSelect {
     $selected = @($script:SELECTED_CLAUDE, $script:SELECTED_GEMINI, $script:SELECTED_OPENCODE)
     $detected = @($script:HAS_CLAUDE, $script:HAS_GEMINI, $script:HAS_OPENCODE)
 
-    # Move cursor up to redraw (13 lines)
+    # Move cursor up to redraw (12 lines)
     if (-not $FirstDraw) {
-        Write-Host "$ESC[13A" -NoNewline
+        Write-Host "$ESC[12A" -NoNewline
     }
 
-    # Logo + title
-    $logoTop = "${SH1}${SH1}"
-    $logoMidOuter = "${SH2}${SH2}"
-    $logoCenter = "${SH3}${SH3}${SH3}"
-    $logoCore = "${SHF}${SHF}${SHF}${SHF}${SHF}"
-    $logoBright = "${SH3}${SH3}"
-
+    # Title
     Write-Host ""
-    Write-Host "   ${GRAY}${logoTop}${CYAN}${logoMidOuter}${BCYAN}${logoCenter}${CYAN}${logoMidOuter}${GRAY}${logoTop}${RESET}     ${BOLD}taoki${RESET}"
-    Write-Host "  ${CYAN}${logoMidOuter}${BCYAN}${logoBright}${WHITE}${logoCore}${BCYAN}${logoBright}${CYAN}${logoMidOuter}${RESET}    ${DIM}structural code intelligence${RESET}"
-    Write-Host "   ${GRAY}${logoTop}${CYAN}${logoMidOuter}${BCYAN}${logoCenter}${CYAN}${logoMidOuter}${GRAY}${logoTop}${RESET}     ${DIM}radar ${MDOT} xray ${MDOT} ripple${RESET}"
+    Write-Host "  ${BOLD}taoki${RESET}  ${DIM}structural code intelligence${RESET}"
+    Write-Host "  ${DIM}radar ${MDOT} xray ${MDOT} ripple${RESET}"
     Write-Host ""
 
     # Heading
