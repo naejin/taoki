@@ -87,6 +87,8 @@ jobs:
           mkdir -p staging/taoki/scripts
           cp scripts/run.sh staging/taoki/scripts/
           cp scripts/run.cmd staging/taoki/scripts/
+          cp scripts/taoki-gemini.md staging/taoki/scripts/
+          cp scripts/taoki-opencode.md staging/taoki/scripts/
           chmod +x staging/taoki/scripts/run.sh
           chmod +x staging/taoki/target/release/taoki
           chmod +x staging/taoki/hooks/*.sh
@@ -115,6 +117,8 @@ jobs:
           mkdir -p staging/taoki/scripts
           cp scripts/run.sh staging/taoki/scripts/
           cp scripts/run.cmd staging/taoki/scripts/
+          cp scripts/taoki-gemini.md staging/taoki/scripts/
+          cp scripts/taoki-opencode.md staging/taoki/scripts/
           cd staging
           7z a -tzip ../${{ matrix.artifact }}.${{ matrix.ext }} taoki
         shell: bash

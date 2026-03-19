@@ -1,74 +1,79 @@
-# Taoki v1.2.0 Release Notes
+# Taoki v1.3.0 Release Notes
 
 ## Highlights
 
-This release redesigns the plugin hooks to eliminate **alarm fatigue**. Previously, hooks fired the same generic message on every Read, Glob, and Grep — in practice, the model habituated and ignored them all, even on 2000+ line files where xray would have saved ~90% of tokens.
-
-Hooks are now **context-aware**: they check file size, detect targeted reads, and inspect glob patterns before deciding whether to nudge. Tested against 8 benchmark repos, this reduces hook noise by 57-96% while preserving nudges for exactly the files where taoki tools provide the most value.
+Taoki now supports **three coding agents**: Claude Code, Gemini CLI, and OpenCode. A new interactive TUI installer detects which agents are available and lets you choose which to set up — replacing the old single-agent pipe-to-bash script.
 
 ## Changes
 
-### Smart Read Hook (Size-Aware)
+### Multi-Agent Interactive Installer
 
-The Read hook now checks three conditions before firing:
-1. **Extension** — only source files (.rs, .py, .ts, .js, .go, .java, etc.)
-2. **Targeted read** — silent when `offset`/`limit` are provided (already knows structure)
-3. **File size** — silent for files under 300 lines; nudges for 300+ with actual line count
+The install scripts (`install.sh` / `install.ps1`) are now full interactive TUI programs:
 
-Old message (every source file): "Consider calling xray on this file first..."
-New message (only 300+ line files): "This file has 2263 lines. xray shows the structural skeleton with line numbers in ~10% of the tokens — consider xray first, then Read the sections you need."
+- **Agent selection** — checkbox UI to pick Claude Code, Gemini CLI, OpenCode (or any combination)
+- **Scope selection** — global (all projects) or project-local for Gemini/OpenCode
+- **Auto-detection** — pre-selects agents found on PATH
+- **Per-agent setup:**
+  - **Claude Code** — marketplace plugin install (unchanged from v1.2.0)
+  - **Gemini CLI** — downloads binary to `~/.local/bin/taoki`, writes MCP config to `settings.json`, deploys instruction file, adds `@./taoki.md` import to `GEMINI.md`
+  - **OpenCode** — downloads binary, writes MCP config to `opencode.json`, deploys instruction file, adds path to `instructions` array
 
-### Smart Glob Hook (Pattern-Aware)
+The installer requires a TTY — scripts must be downloaded before running (not piped).
 
-The Glob hook now reads the pattern and only fires when it contains `**` (broad exploration). Targeted lookups like `hooks/*.sh` or `src/index/languages/*.rs` are silent.
+### Instruction Files
 
-### Grep Hook Removed
+Two new files ship in release artifacts:
+- `scripts/taoki-gemini.md` — Taoki tool guide deployed as `taoki.md` for Gemini CLI
+- `scripts/taoki-opencode.md` — Taoki tool guide deployed as `taoki.md` for OpenCode
 
-Removed entirely. It fired on every Grep including perfectly valid literal string searches. The nudge ("use xray for structural questions") was generic and rarely actionable.
+These describe the three tools (radar, xray, ripple), the recommended workflow, and usage rules.
 
-### SessionStart Workflow
+### Robust JSON Config Handling
 
-Added a workflow sequence to the session start message:
+Install scripts manipulate agent config files (Gemini `settings.json`, OpenCode `opencode.json`) with:
+- JSONC-aware comment stripping (preserves URLs containing `//`)
+- Atomic writes via temp file + move
+- Backup-on-parse-failure with manual fallback instructions
+- UTF-8 without BOM on all PowerShell versions
 
+### Install Command Change
+
+Old (v1.2.0):
+```bash
+curl -fsSL https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.sh | bash
 ```
-Workflow: radar to orient → xray files of interest → Read specific sections → ripple before modifying
+
+New (v1.3.0):
+```bash
+curl -fsSL https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.sh -o /tmp/taoki-install.sh && bash /tmp/taoki-install.sh
 ```
 
-This teaches the tool sequence upfront rather than relying on per-call nudges.
+Claude Code users can still install non-interactively via: `claude plugin marketplace add naejin/monet-plugins && claude plugin install taoki@monet-plugins`
 
-### Error Handling
+### Version Pinning
 
-All hooks now follow a strict rule: **any failure → silent allow**. File stat failures, JSON parse errors, or missing files never disrupt the user experience.
-
-## Noise Reduction (Tested on Benchmark Repos)
-
-| Repo | Files | Old (every read) | New (300+ only) | Reduction |
-|------|-------|-------------------|-----------------|-----------|
-| ripgrep | 100 | 100 | 43 | 57% |
-| flask | 83 | 83 | 18 | 78% |
-| next.js | 21,140 | 21,140 | 837 | 96% |
-| caddy | 301 | 301 | 107 | 64% |
-| guava | 3,245 | 3,245 | 718 | 77% |
-| cobra | 36 | 36 | 11 | 69% |
-| tokio | 767 | 767 | 177 | 76% |
-| serde | 208 | 208 | 24 | 88% |
+Set `TAOKI_VERSION` environment variable to pin a specific release version (useful when GitHub API rate-limits apply):
+```bash
+TAOKI_VERSION=v1.3.0 bash /tmp/taoki-install.sh
+```
 
 ## Breaking Changes
 
-None. This is a hooks-only change — no changes to the MCP tools (radar, xray, ripple), cache format, or binary.
+- `curl ... | bash` no longer works — the TUI requires a TTY. The script prints download-then-run instructions if piped.
+- CLI argument version pinning (`bash -s -- v1.2.0`) is removed. Use `TAOKI_VERSION` env var instead.
 
 ## Stats
 
 - **187 unit tests**, 0 clippy warnings
-- **4 hooks** (down from 5 — Grep hook removed)
-- **57-96% noise reduction** across 8 tested repos
+- **4 hooks** (unchanged from v1.2.0)
+- **3 agents supported** (up from 1)
 
 ## Upgrading
 
 Re-run the install script:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.sh -o /tmp/taoki-install.sh && bash /tmp/taoki-install.sh
 ```
 
 Or if installed via marketplace: `claude plugin install taoki@monet-plugins` (will fetch the new version automatically).

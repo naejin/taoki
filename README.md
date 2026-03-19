@@ -1,9 +1,15 @@
 # Taoki
 
-**Structural code intelligence for Claude Code.** Instead of reading entire files, Claude gets compact summaries — public APIs, function signatures, dependency graphs — and navigates large codebases faster with 70–90% fewer tokens.
+**Structural code intelligence for Claude Code, Gemini CLI, and OpenCode.** Instead of reading entire files, your coding agent gets compact summaries — public APIs, function signatures, dependency graphs — and navigates large codebases faster with 70–90% fewer tokens.
 
 [![Release](https://img.shields.io/github/v/release/naejin/taoki?style=flat-square)](https://github.com/naejin/taoki/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](https://github.com/naejin/taoki/blob/master/LICENSE)
+[![Rust](https://img.shields.io/badge/rust-2021-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
+[![Languages](https://img.shields.io/badge/languages-6-green?style=flat-square)](#supported-languages)
+[![Tests](https://img.shields.io/badge/tests-187-brightgreen?style=flat-square)](#)
+[![Claude Code](https://img.shields.io/badge/Claude_Code-plugin-blueviolet?style=flat-square)](https://docs.anthropic.com/en/docs/claude-code)
+[![Gemini CLI](https://img.shields.io/badge/Gemini_CLI-supported-4285F4?style=flat-square)](https://github.com/google-gemini/gemini-cli)
+[![OpenCode](https://img.shields.io/badge/OpenCode-supported-FF6F00?style=flat-square)](https://github.com/opencode-ai/opencode)
 
 ## Demo
 
@@ -80,30 +86,27 @@ external:
 
 ### Pre-built binary (recommended)
 
+The installer detects your coding agent (Claude Code, Gemini CLI, or OpenCode) and prompts you to select one if multiple are found.
+
 **Linux / macOS:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.sh -o /tmp/taoki-install.sh && bash /tmp/taoki-install.sh
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-irm https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.ps1 -OutFile $env:TEMP\taoki-install.ps1; & $env:TEMP\taoki-install.ps1
 ```
 
-<details>
-<summary>Install a specific version</summary>
+> The installer requires a TTY for the interactive agent selection prompt — that's why the script is downloaded first rather than piped directly.
+
+**Claude Code users (non-interactive):**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.sh | bash -s -- v0.3.1
+claude plugin marketplace add naejin/monet-plugins && claude plugin install taoki@monet-plugins
 ```
-
-```powershell
-$env:TAOKI_VERSION="v0.3.1"; irm https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.ps1 | iex
-```
-
-</details>
 
 ### From source
 
@@ -198,7 +201,7 @@ Tested against 15 open-source projects (run `cargo run --bin benchmark --feature
 
 **Known limitation:** deno fails on empty skeletons due to `.d.ts` ambient declaration files (`declare namespace`, `declare function`). The TypeScript extractor does not yet handle `declare` blocks — these files parse successfully but produce no structural output. Tracked for a future extractor improvement.
 
-*Results from v1.1.0 against pinned commits. Run `cargo run --bin benchmark --features benchmark -- --update-pins` to refresh pins.*
+*Results from v1.2.0 against pinned commits. Run `cargo run --bin benchmark --features benchmark -- --update-pins` to refresh pins.*
 
 ## License
 
