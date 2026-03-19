@@ -68,7 +68,7 @@ None. This is a hooks-only change — no changes to the MCP tools (radar, xray, 
 Re-run the install script:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/naejin/taoki/master/scripts/install.sh -o /tmp/taoki-install.sh && bash /tmp/taoki-install.sh
 ```
 
 Or if installed via marketplace: `claude plugin install taoki@monet-plugins` (will fetch the new version automatically).
