@@ -123,15 +123,151 @@ jobs:
           7z a -tzip ../${{ matrix.artifact }}.${{ matrix.ext }} taoki
         shell: bash
 
+      - name: Smoke test binary
+        if: "!matrix.cross"
+        run: |
+          if [ "${{ matrix.ext }}" = "zip" ]; then
+            BIN="target/${{ matrix.target }}/release/taoki.exe"
+          else
+            BIN="target/${{ matrix.target }}/release/taoki"
+          fi
+          VERSION="${GITHUB_REF_NAME#v}"
+
+          # --version check
+          BIN_VERSION=$("$BIN" --version 2>&1)
+          if echo "$BIN_VERSION" | grep -q "$VERSION"; then
+            echo "✓ Binary reports v${VERSION}"
+          else
+            echo "✗ Binary version '${BIN_VERSION}' doesn't match tag ${VERSION}"
+            exit 1
+          fi
+
+          # MCP initialize + tools/list
+          RESP=$(printf '%s\n%s\n%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci-test","version":"1.0"}}}' \
+            '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+            | timeout 10 "$BIN" 2>/dev/null || true)
+
+          TOOLS=$(echo "$RESP" | python3 -c "
+          import sys, json
+          for line in sys.stdin:
+              line = line.strip()
+              if not line: continue
+              try:
+                  d = json.loads(line)
+                  if d.get('id') == 2 and 'result' in d:
+                      names = sorted(t['name'] for t in d['result']['tools'])
+                      print(' '.join(names))
+              except: pass
+          " 2>/dev/null || true)
+
+          if [ "$TOOLS" = "radar ripple xray" ]; then
+            echo "✓ All 3 MCP tools registered"
+          else
+            echo "✗ Expected 'radar ripple xray', got '${TOOLS}'"
+            exit 1
+          fi
+        shell: bash
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}.${{ matrix.ext }}
 
+  validate:
+    name: Validate artifacts
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Validate artifact contents
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          ERRORS=0
+
+          REQUIRED_FILES=(
+            "taoki/.claude-plugin/plugin.json"
+            "taoki/commands/taoki-radar.md"
+            "taoki/commands/taoki-ripple.md"
+            "taoki/commands/taoki-xray.md"
+            "taoki/skills/taoki-workflow.md"
+            "taoki/hooks/hooks.json"
+            "taoki/hooks/check-read.sh"
+            "taoki/hooks/check-glob.sh"
+            "taoki/hooks/check-agent.sh"
+            "taoki/scripts/run.sh"
+            "taoki/scripts/run.cmd"
+            "taoki/scripts/taoki-gemini.md"
+            "taoki/scripts/taoki-opencode.md"
+          )
+
+          for dir in artifacts/taoki-*/; do
+            ARCHIVE=$(find "$dir" -type f \( -name '*.tar.gz' -o -name '*.zip' \) | head -1)
+            NAME=$(basename "$ARCHIVE")
+            echo "── Validating $NAME ──"
+
+            TMPDIR=$(mktemp -d)
+            if [[ "$ARCHIVE" == *.tar.gz ]]; then
+              tar xzf "$ARCHIVE" -C "$TMPDIR"
+              BINARY="$TMPDIR/taoki/target/release/taoki"
+            else
+              unzip -q "$ARCHIVE" -d "$TMPDIR"
+              BINARY="$TMPDIR/taoki/target/release/taoki.exe"
+            fi
+
+            # Check required files
+            for f in "${REQUIRED_FILES[@]}"; do
+              if [ ! -f "$TMPDIR/$f" ]; then
+                echo "  ✗ Missing: $f"
+                ERRORS=$((ERRORS + 1))
+              fi
+            done
+
+            # Check binary exists
+            if [ ! -f "$BINARY" ]; then
+              echo "  ✗ Missing binary"
+              ERRORS=$((ERRORS + 1))
+            else
+              echo "  ✓ Binary present"
+            fi
+
+            # Check plugin.json version matches tag
+            PV=$(python3 -c "import json; print(json.load(open('$TMPDIR/taoki/.claude-plugin/plugin.json'))['version'])")
+            if [ "$PV" = "$VERSION" ]; then
+              echo "  ✓ plugin.json version matches tag (v${VERSION})"
+            else
+              echo "  ✗ plugin.json version '${PV}' != tag '${VERSION}'"
+              ERRORS=$((ERRORS + 1))
+            fi
+
+            # Check no .mcp.json leaked in
+            if [ -f "$TMPDIR/taoki/.mcp.json" ]; then
+              echo "  ✗ .mcp.json should not be in release artifacts"
+              ERRORS=$((ERRORS + 1))
+            fi
+
+            rm -rf "$TMPDIR"
+            echo "  ✓ All required files present"
+          done
+
+          if [ "$ERRORS" -gt 0 ]; then
+            echo ""
+            echo "✗ ${ERRORS} validation error(s) -- aborting release"
+            exit 1
+          fi
+          echo ""
+          echo "✓ All artifacts validated"
+        shell: bash
+
   release:
     name: Create Release
-    needs: build
+    needs: [build, validate]
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
