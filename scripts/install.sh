@@ -597,7 +597,7 @@ ensure_binary() {
     version=$(get_latest_version 2>/dev/null || true)
     if [ -z "$version" ]; then
       error "Could not determine latest taoki version from GitHub."
-      error "If rate-limited, set TAOKI_VERSION=v1.2.0 to specify a version manually."
+      error "If rate-limited, set TAOKI_VERSION=v1.3.0 to specify a version manually."
       return 1
     fi
   fi

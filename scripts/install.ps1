@@ -59,6 +59,18 @@ function Write-Err($msg) {
     Write-Host ""
 }
 
+# Write text to a file as UTF-8 without BOM.
+# Set-Content -Encoding UTF8 writes a BOM on PowerShell 5.1 (default on Windows 10/11),
+# which breaks JSON parsers and CLI tools. This helper is safe on all PS versions.
+function Write-Utf8NoBom {
+    param([string]$Path, [string]$Content)
+    $dir = Split-Path $Path -Parent
+    if ($dir -and -not (Test-Path $dir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+    [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
+}
+
 # -----------------------------------------------------------------------------
 # 2. TUI functions
 # -----------------------------------------------------------------------------
@@ -331,11 +343,7 @@ function Upsert-JsonMcp {
 
     # If file doesn't exist, create it
     if (-not (Test-Path $File)) {
-        $dir = Split-Path $File -Parent
-        if ($dir -and -not (Test-Path $dir)) {
-            New-Item -ItemType Directory -Path $dir -Force | Out-Null
-        }
-        Set-Content -Path $File -Value '{}' -Encoding UTF8
+        Write-Utf8NoBom -Path $File -Content '{}'
     }
 
     $rawContent = Get-Content -Path $File -Raw -ErrorAction SilentlyContinue
@@ -375,7 +383,7 @@ function Upsert-JsonMcp {
     $json = ConvertTo-Json $data -Depth 10
     # Atomic write: temp file + move prevents data loss on interrupt
     $tmpFile = "${File}.tmp.$PID"
-    Set-Content -Path $tmpFile -Value $json -Encoding UTF8
+    Write-Utf8NoBom -Path $tmpFile -Content $json
     Move-Item -Path $tmpFile -Destination $File -Force
     return $true
 }
@@ -389,11 +397,7 @@ function Upsert-JsonArray {
     )
 
     if (-not (Test-Path $File)) {
-        $dir = Split-Path $File -Parent
-        if ($dir -and -not (Test-Path $dir)) {
-            New-Item -ItemType Directory -Path $dir -Force | Out-Null
-        }
-        Set-Content -Path $File -Value '{}' -Encoding UTF8
+        Write-Utf8NoBom -Path $File -Content '{}'
     }
 
     $rawContent = Get-Content -Path $File -Raw -ErrorAction SilentlyContinue
@@ -432,7 +436,7 @@ function Upsert-JsonArray {
     $json = ConvertTo-Json $data -Depth 10
     # Atomic write: temp file + move prevents data loss on interrupt
     $tmpFile = "${File}.tmp.$PID"
-    Set-Content -Path $tmpFile -Value $json -Encoding UTF8
+    Write-Utf8NoBom -Path $tmpFile -Content $json
     Move-Item -Path $tmpFile -Destination $File -Force
     return $true
 }
@@ -626,7 +630,7 @@ function Ensure-Binary {
         try { $version = Get-LatestVersion } catch { }
         if (-not $version) {
             Write-Err "Could not determine latest taoki version from GitHub."
-            Write-Err "If rate-limited, set `$env:TAOKI_VERSION='v1.2.0' to specify a version manually."
+            Write-Err "If rate-limited, set `$env:TAOKI_VERSION='v1.3.0' to specify a version manually."
             return $false
         }
     }
@@ -730,7 +734,7 @@ function Install-GeminiCli {
         $content = Get-Content -Path $geminiMd -Raw
         if ($content -notmatch [regex]::Escape($importLine)) {
             $newContent = "${importLine}`r`n`r`n${content}"
-            Set-Content -Path $geminiMd -Value $newContent -Encoding UTF8
+            Write-Utf8NoBom -Path $geminiMd -Content $newContent
             Write-Info "Added $importLine to $geminiMd"
         }
         else {
@@ -742,7 +746,7 @@ function Install-GeminiCli {
         if ($geminiMdDir -and -not (Test-Path $geminiMdDir)) {
             New-Item -ItemType Directory -Path $geminiMdDir -Force | Out-Null
         }
-        Set-Content -Path $geminiMd -Value $importLine -Encoding UTF8
+        Write-Utf8NoBom -Path $geminiMd -Content $importLine
         Write-Info "Created $geminiMd with $importLine"
     }
 
