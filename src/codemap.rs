@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use fs2::FileExt;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::cache::CACHE_VERSION;
@@ -351,93 +352,95 @@ pub fn build_code_map(root: &Path, globs: &[String]) -> Result<String, CodeMapEr
         };
     }
 
-    let mut new_files: HashMap<String, CacheEntry> = HashMap::new();
-    let mut results: Vec<FileResult> = Vec::new();
+    // Process files in parallel — hash, cache check, parse, and tag computation
+    // are all independent per file. The old cache is read-only during this phase.
+    let parallel_results: Vec<(String, CacheEntry, FileResult)> = files
+        .par_iter()
+        .filter_map(|file_path| {
+            let rel = file_path
+                .strip_prefix(root)
+                .unwrap_or(file_path)
+                .to_string_lossy()
+                .replace('\\', "/");
 
-    for file_path in &files {
-        let rel = file_path
-            .strip_prefix(root)
-            .unwrap_or(file_path)
-            .to_string_lossy()
-            .replace('\\', "/");
+            let hash = hash_file(file_path).ok()?;
 
-        let hash = match hash_file(file_path) {
-            Ok(h) => h,
-            Err(_) => continue,
-        };
-
-        // Check cache
-        if let Some(cached) = cache.files.get(&rel) {
-            if cached.hash == hash {
-                results.push(FileResult {
-                    path: rel.clone(),
-                    lines: cached.lines,
-                    public_types: cached.public_types.clone(),
-                    public_functions: cached.public_functions.clone(),
-                    tags: cached.tags.clone(),
-                    parse_error: false,
-                });
-                new_files.insert(rel, CacheEntry {
-                    hash,
-                    lines: cached.lines,
-                    public_types: cached.public_types.clone(),
-                    public_functions: cached.public_functions.clone(),
-                    tags: cached.tags.clone(),
-                });
-                continue;
+            // Check cache (read-only access to old cache)
+            if let Some(cached) = cache.files.get(&rel) {
+                if cached.hash == hash {
+                    let entry = CacheEntry {
+                        hash,
+                        lines: cached.lines,
+                        public_types: cached.public_types.clone(),
+                        public_functions: cached.public_functions.clone(),
+                        tags: cached.tags.clone(),
+                    };
+                    let result = FileResult {
+                        path: rel.clone(),
+                        lines: cached.lines,
+                        public_types: cached.public_types.clone(),
+                        public_functions: cached.public_functions.clone(),
+                        tags: cached.tags.clone(),
+                        parse_error: false,
+                    };
+                    return Some((rel, entry, result));
+                }
             }
-        }
 
-        // Parse file
-        let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        let Some(lang) = Language::from_extension(ext) else {
-            continue;
-        };
+            let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            let lang = Language::from_extension(ext)?;
+            let source = std::fs::read(file_path).ok()?;
+            let lines = source.iter().filter(|&&b| b == b'\n').count() + 1;
 
-        let source = match std::fs::read(file_path) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-
-        let lines = source.iter().filter(|&&b| b == b'\n').count() + 1;
-
-        let (public_types, public_functions) =
-            match index::extract_public_api(&source, lang) {
+            let (public_types, public_functions) = match index::extract_public_api(&source, lang) {
                 Ok((types, fns)) => (types, fns),
                 Err(_) => {
-                    results.push(FileResult {
+                    let entry = CacheEntry {
+                        hash,
+                        lines,
+                        public_types: Vec::new(),
+                        public_functions: Vec::new(),
+                        tags: Vec::new(),
+                    };
+                    let result = FileResult {
                         path: rel.clone(),
                         lines,
                         public_types: Vec::new(),
                         public_functions: Vec::new(),
                         tags: Vec::new(),
                         parse_error: true,
-                    });
-                    continue;
+                    };
+                    return Some((rel, entry, result));
                 }
             };
 
-        let tags = compute_tags(&rel, &public_types, &public_functions, &source);
+            let tags = compute_tags(&rel, &public_types, &public_functions, &source);
 
-        new_files.insert(
-            rel.clone(),
-            CacheEntry {
-                hash: hash.clone(),
+            let entry = CacheEntry {
+                hash,
                 lines,
                 public_types: public_types.clone(),
                 public_functions: public_functions.clone(),
                 tags: tags.clone(),
-            },
-        );
+            };
+            let result = FileResult {
+                path: rel.clone(),
+                lines,
+                public_types,
+                public_functions,
+                tags,
+                parse_error: false,
+            };
+            Some((rel, entry, result))
+        })
+        .collect();
 
-        results.push(FileResult {
-            path: rel,
-            lines,
-            public_types,
-            public_functions,
-            tags,
-            parse_error: false,
-        });
+    // Collect parallel results into cache and results vec (sequential)
+    let mut new_files: HashMap<String, CacheEntry> = HashMap::with_capacity(parallel_results.len());
+    let mut results: Vec<FileResult> = Vec::with_capacity(parallel_results.len());
+    for (rel, entry, file_result) in parallel_results {
+        new_files.insert(rel, entry);
+        results.push(file_result);
     }
 
     // Update and save cache
