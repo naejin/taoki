@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](https://github.com/naejin/taoki/blob/master/LICENSE)
 [![Rust](https://img.shields.io/badge/rust-2021-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![Languages](https://img.shields.io/badge/languages-6-green?style=flat-square)](#supported-languages)
-[![Tests](https://img.shields.io/badge/tests-187-brightgreen?style=flat-square)](#)
+[![Tests](https://img.shields.io/badge/tests-186-brightgreen?style=flat-square)](#)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-plugin-blueviolet?style=flat-square)](https://docs.anthropic.com/en/docs/claude-code)
 [![Gemini CLI](https://img.shields.io/badge/Gemini_CLI-supported-4285F4?style=flat-square)](https://github.com/google-gemini/gemini-cli)
 [![OpenCode](https://img.shields.io/badge/OpenCode-supported-FF6F00?style=flat-square)](https://github.com/opencode-ai/opencode)
@@ -16,42 +16,47 @@
 **`radar`** — one-line-per-file summary with heuristic tags:
 
 ```
-src/codemap.rs (537 lines) [error-types]
+src/codemap.rs (814 lines) [error-types]
   public_types: CodeMapError
   public_functions: walk_files_public(...), build_code_map(...)
 
-src/main.rs (136 lines) [entry-point]
+src/main.rs (25 lines) [entry-point]
   public_types: (none)
   public_functions: (none)
 
-src/mcp.rs (479 lines) [error-types]
-  public_types: JsonRpcRequest, JsonRpcResponse, JsonRpcError, ToolContent, ToolResult
-  public_functions: tool_definitions(), handle_request(...)
+src/mcp/mod.rs (140 lines) [module-root]
+  public_types: XrayParams, RadarParams, RippleParams, TaokiMcpServer
+  public_functions: run_mcp_server(...)
 ```
 
 **`xray`** — structural skeleton with line numbers and body insights:
 
 ```
-imports: [1-3]
-  taoki::mcp
-  std::io::{self, BufRead, Write}
+imports: [4-15]
+  rmcp::{schemars::JsonSchema, serde::{Deserialize, Serialize}, ...}
 
 types:
-  #[derive(Clone, Copy, PartialEq)]
-  enum Framing [6-9]
-    ContentLength
-    Jsonl
+  #[derive(Debug, Deserialize, Serialize, JsonSchema)]
+  pub struct RadarParams [28-34]
+    pub path: String
+    pub globs: Vec<String>
+
+impls:
+  TaokiMcpServer [64-116]
+    pub new() -> Self [65-69]
+      → calls: Self::tool_router
+    radar(
+        &self,
+        params: Parameters<RadarParams>,
+    ) -> Result<CallToolResult, McpError> [90-99]
+      → calls: CallToolResult::error, CallToolResult::success, Ok, tools::call_radar
+      → match: result → Ok(text), Err(text)
 
 fns:
-  read_message(reader: &mut impl BufRead) -> ... [11-37]
-    /// Read a single JSON-RPC message from stdin.
-    → calls: read_content_length_message, read_line
-    → methods: trim
-    → match: framing → Framing::ContentLength, Framing::Jsonl
-  main() [86-135]
-    → calls: handle_request, read_message, write_message
-    → match: framing → Framing::ContentLength, Framing::Jsonl
-    → errors: 3× ?
+  pub run_mcp_server() -> Result<(), Box<dyn std::error::Error>> [133-139]
+    → calls: Ok, TaokiMcpServer::new, stdio
+    → methods: serve, waiting
+    → errors: 2× ?
 ```
 
 **`ripple`** — cross-file import/export graph with symbols:
@@ -71,7 +76,7 @@ external:
 ## Features
 
 - **Three tools** — `radar` (repo overview), `xray` (file skeleton), `ripple` (import graph with depth)
-- **70–90% fewer tokens** — Claude reads structure, not source, then targets specific line ranges
+- **70–90% fewer tokens** — your agent reads structure, not source, then targets specific line ranges
 - **Heuristic tags** — files auto-tagged as `[entry-point]`, `[tests]`, `[error-types]`, `[data-models]`, `[module-root]`, and more
 - **Blast radius** — `ripple` shows transitive dependents with `depth=2` or `depth=3`, symbols shown inline
 - **Docstring extraction** — first line of doc comments (`///`, `/** */`, Python docstrings) shown inline as `/// summary`
@@ -121,9 +126,9 @@ The plugin compiles automatically on first use — no manual build step.
 
 ## Usage
 
-Once installed, Claude automatically has access to the three tools. Use them through natural language:
+Once installed, your coding agent automatically has access to the three tools. Use them through natural language:
 
-| You say | Claude calls |
+| You say | Tool called |
 |---------|-------------|
 | "Map the codebase" | `radar` |
 | "Show me the structure of src/auth.ts" | `xray` |
@@ -153,7 +158,7 @@ Once installed, Claude automatically has access to the three tools. Use them thr
 
 ## How It Works
 
-Taoki runs as an [MCP](https://modelcontextprotocol.io/) server over stdio. When Claude starts a session, it can call the three tools at any time:
+Taoki runs as an [MCP](https://modelcontextprotocol.io/) server over stdio. When your coding agent starts a session, it can call the three tools at any time:
 
 - **`radar`** walks the repo (respecting `.gitignore`), hashes each file with [blake3](https://github.com/BLAKE3-team/BLAKE3), and extracts public API summaries using [tree-sitter](https://tree-sitter.github.io/). Results cached at `.cache/taoki/radar.json`. Large repos (>100 files) get directory-grouped output. Long API lists are truncated with xray cue.
 - **`xray`** parses a single file and returns its structural skeleton. The first line of doc comments is extracted and shown inline (`/// summary`), giving agents intent/contract information without reading source. Function and method bodies are analyzed to show call graphs, match/switch arms, and error return sites as `→` insight lines. Test code is automatically detected and collapsed — Python (`test_*`, `Test*`), Go (`Test*`, `Benchmark*`), TypeScript/JS (`describe`, `it`, `test`), Rust (`#[test]`, `#[cfg(test)]`). Files matching test naming patterns are collapsed entirely. Results cached on disk at `.cache/taoki/xray.json`.
