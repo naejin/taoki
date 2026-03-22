@@ -143,11 +143,13 @@ jobs:
           fi
 
           # MCP initialize + tools/list
-          # No `timeout` — macOS lacks it. Pipe close (EOF) makes taoki exit.
-          RESP=$(printf '%s\n%s\n%s\n' \
+          # rmcp's async stdio transport needs the pipe to stay open long enough
+          # to process all messages — a brief sleep before EOF prevents premature close.
+          RESP=$({ printf '%s\n%s\n%s\n' \
             '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci-test","version":"1.0"}}}' \
             '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
-            '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'; \
+            sleep 2; } \
             | "$BIN" 2>/dev/null || true)
 
           TOOLS=$(echo "$RESP" | python3 -c "
