@@ -9,6 +9,7 @@ export PATH="$HOME/.cargo/bin:$PATH"  # Rust toolchain not in default PATH
 cargo build
 cargo test                             # ~186 unit tests, all inline (#[cfg(test)])
 cargo clippy                           # must pass with no warnings
+validation/run.sh                      # 12 validation fixtures across 5 languages
 ```
 
 ### Benchmark
@@ -45,6 +46,11 @@ Rust (.rs), Python (.py, .pyi), TypeScript (.ts, .tsx), JavaScript (.js, .jsx, .
 
 ## Key Conventions
 
+- MCP transport uses `rmcp` framework with JSONL framing (not Content-Length). The `stdio()` transport handles framing automatically.
+- rmcp macros: `#[tool_router]` on impl block generates tool registration; `#[tool]` on async methods registers individual tools; `#[tool_handler]` on `ServerHandler` impl handles initialization. The `tool_router` struct field appears dead to the compiler but is used by macros at runtime — `#[allow(dead_code)]` is required. `#[allow(clippy::new_without_default)]` goes on the `impl` block (not the struct) because `Default` would bypass tool registration.
+- Tool parameter types derive `JsonSchema` (from `schemars`) for automatic schema generation. Doc comments on struct fields become parameter descriptions in the MCP schema.
+- Adding a new MCP tool: define a params struct with `#[derive(Debug, Deserialize, Serialize, JsonSchema)]`, add a `#[tool]`-annotated async method to `TaokiMcpServer`, implement the sync helper in `tools.rs`.
+- Radar uses `rayon::par_iter` for parallel per-file processing. Safety invariant: the old cache (`cache.files`) is read-only during the parallel phase — new results are collected into a `Vec` then inserted into `HashMap` sequentially after.
 - All tree-sitter grammars pinned to 0.23, tree-sitter core at 0.26.
 - Error types use `thiserror` derive macros.
 - Cache is stored at `<repo>/.cache/taoki/` (gitignored): `radar.json`, `xray.json`, `deps.json`. All share a single version (`CACHE_VERSION` in `src/cache.rs`) — bump it when any format changes. Radar uses per-file blake3 hashes (full replacement each call). Xray uses per-file blake3 hashes (upsert per call, pruned during radar). Deps uses two-layer invalidation: per-file content hashes (skip tree-sitter re-parsing) + a fingerprint over file list, workspace config, and source dir map (trigger re-resolution from cached raw imports).
